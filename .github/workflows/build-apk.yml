@@ -60,8 +60,13 @@ jobs:
           fi
           echo "sdkmanager: $SDKM"
           yes | "$SDKM" --licenses > /dev/null 2>&1 || true
-          "$SDKM" "platform-tools" "build-tools;${BUILD_TOOLS}" \
-                  "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}"
+          # 已存在就跳过：重装会刷新 NDK 头文件 mtime，.cxx 缓存直接失效
+          if [ -d "$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" ] && [ -d "$ANDROID_SDK_ROOT/cmake/${CMAKE_VERSION}" ]; then
+            echo "NDK ${NDK_VERSION} / CMake ${CMAKE_VERSION} 已在，跳过安装"
+          else
+            "$SDKM" "platform-tools" "build-tools;${BUILD_TOOLS}" \
+                    "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}"
+          fi
           # compileSdk=37：SDK 仓库里可能是 android-37，也可能是小节号目录 android-37.0
           for p in "platforms;android-37" "platforms;android-37.0" "platforms;android-36"; do
             if "$SDKM" "$p" > /dev/null 2>&1; then echo "platform: $p"; break; fi
@@ -111,6 +116,10 @@ jobs:
           # ninja 只看 mtime：把源码一律按到 2000 年，缓存里的 .o 才会被判定为最新。
           # 这么做是安全的——缓存 key 已经包含这些源码的 hash，内容一变就换 key、整层重编。
           find app/src/main/cpp app/src/main/rust/baiguard/src -exec touch -d '2000-01-01 00:00:00' {} +
+          # 但反向还有一处：NDK 每次跑都重新安装，sysroot 头文件的 mtime 是「刚才」，
+          # 比缓存里 16:49 的 .o 还新，ninja 于是判定所有目标过期、全量重编（实测 119 个里重编了 112 个）。
+          # 缓存命中即等于输入完全相同，把整个 .cxx 提到现在，让 .o 比头文件新。
+          if [ -d app/.cxx ]; then find app/.cxx -exec touch {} + ; fi
 
       # 内核的 Rust 层（baiguard）在 CMake 里以 staticlib 形式接进来，需要 Android target 的 std
       - name: Add Rust Android target
