@@ -143,6 +143,8 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug \
             -Pbai.abis="${ABIS}" \
+            -Pandroid.native.buildOutput=verbose \
+            --console=plain \
             -Dorg.gradle.jvmargs="-Xmx6g -XX:MaxMetaspaceSize=1536m -Dfile.encoding=UTF-8" \
             --stacktrace
 
