@@ -29,6 +29,10 @@ jobs:
       CMAKE_VERSION: '3.22.1'
       BUILD_TOOLS: '36.0.0'
       ABIS: ${{ inputs.abis || 'arm64-v8a' }}
+      # 第三方源码钉死到 commit：既能复现，也让 .cxx 缓存有稳定的失效边界
+      QUICKJS_SHA: 'e585640ffa2cf88ce7c2d587583c6fe15928ec2f'
+      OPENSSL_SHA: 'b71f1470962019bd89534a2919f5925f93bc5779'
+      LLAMA_SHA: '6f311d7ad63dce97a3ad1deaafb7cc044bb8c26c'
 
     steps:
       - name: Checkout
@@ -74,20 +78,39 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
+      # 只做精确命中，不设 restore-keys：.cxx 里是目标文件，拿到版本不符的旧 .o
+      # 会被 ninja 当成「比源码新」直接复用，链进错的 llama.cpp/quickjs。
+      # key 里带三个 commit + 本项目 C/C++ 与 baiguard 源码的 hash，任一变就整层重编。
+      - name: Cache native build (.cxx)
+        uses: actions/cache@v4
+        with:
+          path: app/.cxx
+          key: cxx-${{ runner.os }}-${{ env.ABIS }}-ndk${{ env.NDK_VERSION }}-cmake${{ env.CMAKE_VERSION }}-q${{ env.QUICKJS_SHA }}-o${{ env.OPENSSL_SHA }}-l${{ env.LLAMA_SHA }}-${{ hashFiles('app/src/main/cpp/CMakeLists.txt', 'app/src/main/cpp/core/**', 'app/src/main/cpp/ffi/**', 'app/src/main/cpp/image/**', 'app/src/main/cpp/jni/**', 'app/src/main/cpp/js/**', 'app/src/main/cpp/net/**', 'app/src/main/cpp/runtime/**', 'app/src/main/cpp/tools/**', 'app/src/main/rust/baiguard/**') }}
+
       - name: Fetch third-party sources
         run: |
           set -eux
           TP=app/src/main/cpp/_third_party
           mkdir -p "$TP"
-          # 仓库 .gitignore 排除了 _third_party/，CMakeLists 直接从这四个目录取源码
-          git clone --depth 1 https://github.com/bellard/quickjs "$TP/quickjs"
-          git clone --depth 1 https://github.com/KDAB/android_openssl "$TP/android_openssl-master"
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp "$TP/llama.cpp"
+          # 仓库 .gitignore 排除了 _third_party/，CMakeLists 直接从这些目录取源码
+          fetch() { # $1=url $2=dir $3=commit
+            git init -q "$2"
+            git -C "$2" remote add origin "$1"
+            git -C "$2" fetch -q --depth 1 origin "$3"
+            git -C "$2" checkout -q FETCH_HEAD
+            git -C "$2" log -1 --oneline
+          }
+          fetch https://github.com/bellard/quickjs      "$TP/quickjs"                "$QUICKJS_SHA"
+          fetch https://github.com/KDAB/android_openssl  "$TP/android_openssl-master" "$OPENSSL_SHA"
+          fetch https://github.com/ggml-org/llama.cpp    "$TP/llama.cpp"              "$LLAMA_SHA"
           # OpenCL 头文件与 stub 不拉：CMake 检测不到就自动退回纯 CPU
           printf '%s\n' '--- quickjs 必需源文件 ---'
           ls "$TP/quickjs"/{quickjs.c,dtoa.c,libregexp.c,libunicode.c,cutils.c}
           printf '%s\n' '--- openssl arm64 静态库 ---'
           ls "$TP/android_openssl-master/ssl_3/arm64-v8a"
+          # ninja 只看 mtime：把源码一律按到 2000 年，缓存里的 .o 才会被判定为最新。
+          # 这么做是安全的——缓存 key 已经包含这些源码的 hash，内容一变就换 key、整层重编。
+          find app/src/main/cpp app/src/main/rust/baiguard/src -exec touch -d '2000-01-01 00:00:00' {} +
 
       # 内核的 Rust 层（baiguard）在 CMake 里以 staticlib 形式接进来，需要 Android target 的 std
       - name: Add Rust Android target
