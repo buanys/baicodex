@@ -89,6 +89,19 @@ jobs:
           printf '%s\n' '--- openssl arm64 静态库 ---'
           ls "$TP/android_openssl-master/ssl_3/arm64-v8a"
 
+      # 内核的 Rust 层（baiguard）在 CMake 里以 staticlib 形式接进来，需要 Android target 的 std
+      - name: Add Rust Android target
+        run: |
+          set -eux
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup target add aarch64-linux-android
+          rustc --version
+
       - name: Write local.properties
         run: |
           set -eux
