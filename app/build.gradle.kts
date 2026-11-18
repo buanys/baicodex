@@ -61,7 +61,12 @@ android {
         //种子注入：表里每一行都出一个 BuildConfig 字段，缺键就是空串
         SEEDS.forEach { row -> buildConfigField("String", row[0], seedLiteral(row[1], "")) }
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            //-Pbai.abis=arm64-v8a 可只编 64 位；CI 上能省掉整整一半的 native 时间
+            val abis = (findProperty("bai.abis") as String?)
+                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOf("arm64-v8a", "armeabi-v7a")
+            abiFilters += abis
         }
         
         if (baiAesSeed != null) {

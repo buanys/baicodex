@@ -1,0 +1,118 @@
+name: build-apk
+
+# 手机上编不动 native（NDK 只有 x86_64 主机工具链），所以把整条构建搬到这里。
+# 第三方源码（quickjs / android_openssl / llama.cpp）不进仓库，由本流程运行时拉。
+
+on:
+  workflow_dispatch:
+    inputs:
+      abis:
+        description: '要编的 ABI，逗号分隔（arm64-v8a 或 arm64-v8a,armeabi-v7a）'
+        required: false
+        default: 'arm64-v8a'
+        type: string
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      NDK_VERSION: '28.2.13676358'
+      CMAKE_VERSION: '3.22.1'
+      BUILD_TOOLS: '36.0.0'
+      ABIS: ${{ inputs.abis || 'arm64-v8a' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install SDK packages
+        run: |
+          set -eux
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "build-tools;${BUILD_TOOLS}" \
+                     "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}"
+          # compileSdk=37：SDK 仓库里可能是 android-37，也可能是小节号目录 android-37.0
+          for p in "platforms;android-37" "platforms;android-37.0" "platforms;android-36"; do
+            if sdkmanager "$p" > /dev/null 2>&1; then echo "platform: $p"; break; fi
+          done
+          sdkmanager --list_installed
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', '**/*.gradle.kts') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Fetch third-party sources
+        run: |
+          set -eux
+          TP=app/src/main/cpp/_third_party
+          mkdir -p "$TP"
+          # 仓库 .gitignore 排除了 _third_party/，CMakeLists 直接从这四个目录取源码
+          git clone --depth 1 https://github.com/bellard/quickjs "$TP/quickjs"
+          git clone --depth 1 https://github.com/KDAB/android_openssl "$TP/android_openssl-master"
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp "$TP/llama.cpp"
+          # OpenCL 头文件与 stub 不拉：CMake 检测不到就自动退回纯 CPU
+          printf '%s\n' '--- quickjs 必需源文件 ---'
+          ls "$TP/quickjs"/{quickjs.c,dtoa.c,libregexp.c,libunicode.c,cutils.c}
+          printf '%s\n' '--- openssl arm64 静态库 ---'
+          ls "$TP/android_openssl-master/ssl_3/arm64-v8a"
+
+      - name: Write local.properties
+        run: |
+          set -eux
+          {
+            echo "sdk.dir=${ANDROID_SDK_ROOT}"
+            echo "cmake.dir=${ANDROID_SDK_ROOT}/cmake/${CMAKE_VERSION}"
+            echo "stringfog.key=${{ secrets.STRINGFOG_KEY }}"
+            echo "baicodex.aes.key=${{ secrets.BAICODEX_AES_KEY }}"
+          } > local.properties
+          # 不打印密钥，只看键名
+          cut -d= -f1 local.properties
+
+      - name: Build debug APK
+        run: |
+          set -eux
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug \
+            -Pbai.abis="${ABIS}" \
+            -Dorg.gradle.jvmargs="-Xmx6g -XX:MaxMetaspaceSize=1536m -Dfile.encoding=UTF-8" \
+            --stacktrace
+
+      - name: List APK
+        run: |
+          find app/build/outputs/apk -name '*.apk' -exec ls -lh {} \;
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: baicodex-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
