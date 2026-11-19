@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Baicodex</string>
+    <string name="app_name">EA</string>
 
     <!-- Onboarding -->
     <string name="ob_sub">A local AI agent on your device</string>
@@ -1151,7 +1151,7 @@
     <string name="pk_dir">Path: %1$s</string>
     <string name="pk_secret_save">Save key</string>
     <!-- 无障碍：屏幕操作 -->
-    <string name="a11y_label">BaiAgent Screen Control</string>
+    <string name="a11y_label">EA Screen Control</string>
     <string name="a11y_desc">Lets the AI read on-screen controls and screenshots, then tap, swipe, long-press and type for you. Used only for tasks you start.</string>
     <string name="ag_capsule_fmt">Running %1$s</string>
     <string name="shiz_manual">You chose "Deny and don\'t ask again" in Shizuku, so no dialog will appear: open Shizuku -> authorized apps -> enable BaiAgent</string>

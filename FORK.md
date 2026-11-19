@@ -42,6 +42,8 @@ git checkout main && git cherry-pick <sha>
 | `app/src/main/cpp/CMakeLists.txt` | 加 13 行 ccache 开关（`BAI_CCACHE` 环境变量） | 不改默认行为，只给 CI 用 |
 | `signing/baicodex-ci.jks` | 固定签名密钥 | 签名不变才能覆盖安装，不用每次卸载 |
 | `.gitignore` | 放行上面那个 keystore | — |
+| `app/build.gradle.kts` | `applicationId = "io.github.ea"` | 独立安装身份，数据目录随之变化 |
+| `values*/strings.xml`（5 个） | `app_name` → `EA`，`a11y_label` / `island_task_title` 同步 | 桌面与系统设置里的显示名 |
 
 除此之外与上游一致，`ui/` 目录零改动。
 
