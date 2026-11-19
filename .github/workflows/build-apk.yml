@@ -140,17 +140,24 @@ jobs:
           rustup target add aarch64-linux-android
           rustc --version
 
-      # 上游从 1.18 起 debug 也复用 release 签名配置；没有 keystore 时 debug 包是未签名的，
-      # 装上会报「应用未安装」。CI 里现生成一个，只用于这次构建。
-      - name: Write local.properties + CI keystore
+      # 上游从 1.18 起 debug 也复用 release 签名配置；没有 keystore 会出未签名包，安装报「应用未安装」。
+      # 自用分支固定用仓库里的 signing/baicodex-ci.jks：签名稳定，才能覆盖安装不卸载。
+      - name: Write local.properties + signing
         run: |
           set -eux
-          KS="$PWD/ci-release.jks"
           PASS="baicodex-ci"
-          keytool -genkeypair -keystore "$KS" -alias baicodex \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass "$PASS" -keypass "$PASS" \
-            -dname "CN=baicodex CI, O=baicodex, C=CN" > /dev/null
+          ALIAS="baicodex"
+          if [ -f signing/baicodex-ci.jks ]; then
+            KS="$PWD/signing/baicodex-ci.jks"
+            echo "签名：使用仓库内的固定 keystore（升级可覆盖安装）"
+          else
+            KS="$PWD/ci-release.jks"
+            keytool -genkeypair -keystore "$KS" -alias "$ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$PASS" -keypass "$PASS" \
+              -dname "CN=baicodex CI, O=baicodex, C=CN" > /dev/null
+            echo "::warning::没有固定 keystore，本次签名是临时的，装之前必须先卸载旧版"
+          fi
           {
             echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
             echo "cmake.dir=${ANDROID_SDK_ROOT}/cmake/${CMAKE_VERSION}"
@@ -158,7 +165,7 @@ jobs:
             echo "baicodex.aes.key=${{ secrets.BAICODEX_AES_KEY }}"
             echo "bai.sign.store=$KS"
             echo "bai.sign.storePass=$PASS"
-            echo "bai.sign.alias=baicodex"
+            echo "bai.sign.alias=$ALIAS"
             echo "bai.sign.keyPass=$PASS"
           } > local.properties
           # 不打印密钥，只看键名

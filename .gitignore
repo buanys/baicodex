@@ -65,3 +65,5 @@ desktop/legacy-kotlin/.kotlin/
 /baicodex-release.jks
 *.jks
 *.keystore
+#例外：CI 固定签名，自用私有库；将来要把仓库公开，先换掉这把钥匙
+!signing/baicodex-ci.jks
