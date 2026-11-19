@@ -39,10 +39,11 @@ val miotRedirect: String = seed("miot.redirect", "").takeIf { s -> s.startsWith(
 val miotRegion: String = seed("miot.region", "cn").takeIf { s ->
     s.isNotEmpty() && s.length <= 10 && s.all { it.isLowerCase() || it.isDigit() }
 } ?: "cn"
-
 android {
+
     androidResources {
         ignoreAssetsPattern = "rootfs.tgz"
+        localeFilters += listOf("zh", "en", "fr", "ja", "zh-rTW")
     }
     namespace = "b.ai"
     compileSdk = 37
@@ -52,8 +53,8 @@ android {
         applicationId = "io.github.ea"
         minSdk = 24
         targetSdk = 34
-        versionCode = 51
-        versionName = "1.18.2"
+        versionCode = 54
+        versionName = "1.18.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BAI_HOST", "\"$baiHost\"")
@@ -62,21 +63,27 @@ android {
         buildConfigField("String", "MIOT_REDIRECT", "\"$miotRedirect\"")
         buildConfigField("String", "MIOT_REGION", "\"$miotRegion\"")
         SEEDS.forEach { row -> buildConfigField("String", row[0], seedLiteral(row[1], "")) }
-        ndk {
-            //-Pbai.abis=arm64-v8a 可只编 64 位；CI 上能省掉整整一半的 native 时间
-            val abis = (findProperty("bai.abis") as String?)
-                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
-                ?.takeIf { it.isNotEmpty() }
-                ?: listOf("arm64-v8a", "armeabi-v7a")
-            abiFilters += abis
-        }
-        
+        //ABI 目标由外层 splits.abi.include 决定：两处同时写会报 Conflicting configuration
         if (baiAesSeed != null) {
             externalNativeBuild {
                 cmake { arguments.add("-DBAI_KEY_HEX=$baiAesSeed") }
             }
         }
     } //默认配置
+
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            //-Pbai.abis=arm64-v8a 可只编 64 位；CI 上省掉整整一轮 native 编译
+            val abis = (findProperty("bai.abis") as String?)
+                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOf("arm64-v8a", "armeabi-v7a")
+            include(*abis.toTypedArray())
+            isUniversalApk = false
+        }
+    } //ABI 分包
 
     externalNativeBuild {
         cmake {
@@ -167,3 +174,15 @@ stringfog {
     randomKeyPerString.set(true)
     randomKeyLength.set(16)
 }
+
+val copyAbiApks by tasks.registering(Copy::class) {
+    dependsOn("assembleRelease")
+    //不写回 AGP 的 outputs/apk/release：Gradle 9 会报「隐式依赖」错误，统一放到 outputs/apk/abi
+    from(layout.buildDirectory.dir("outputs/apk/release")) {
+        include("app-arm64-v8a-release.apk", "app-armeabi-v7a-release.apk")
+        rename { n ->
+            if (n.startsWith("app-arm64-v8a")) "app-release-v8a.apk" else "app-release-v7a.apk"
+        }
+    }
+    into(layout.buildDirectory.dir("outputs/apk/abi"))
+} //分包产物改名
