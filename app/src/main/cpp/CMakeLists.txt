@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(baicodex C CXX)
 
+# CI 上启用 ccache：内容寻址，复用目标文件不受头文件 mtime 影响
+# 本地不设 BAI_CCACHE 就完全不启用，行为与之前一致
+if(DEFINED ENV{BAI_CCACHE})
+    find_program(BAI_CCACHE_BIN ccache)
+    if(BAI_CCACHE_BIN)
+        message(STATUS "bai: ccache 已启用（${BAI_CCACHE_BIN}）")
+        set(CMAKE_C_COMPILER_LAUNCHER ${BAI_CCACHE_BIN})
+        set(CMAKE_CXX_COMPILER_LAUNCHER ${BAI_CCACHE_BIN})
+    else()
+        message(STATUS "bai: 设了 BAI_CCACHE 但没找到 ccache，退回直接编译")
+    endif()
+endif()
+
 #cpp/ 目录职责，新增文件按此归位：
 #  core/base/      与业务无关的基础工具：字节、KV 文本、掩码写入、扫描游走
 #  core/security/  安全相关：数据输出脱敏、加解密、常量时间比较

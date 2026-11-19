@@ -83,14 +83,17 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # 只做精确命中，不设 restore-keys：.cxx 里是目标文件，拿到版本不符的旧 .o
-      # 会被 ninja 当成「比源码新」直接复用，链进错的 llama.cpp/quickjs。
-      # key 里带三个 commit + 本项目 C/C++ 与 baiguard 源码的 hash，任一变就整层重编。
-      - name: Cache native build (.cxx)
+      # .cxx 缓存试过一版：ninja 只看 mtime，NDK 每次重装刷新 sysroot 头文件，
+      # 119 个目标仍会重编 112 个，收益为零。换成 ccache——它按预处理内容寻址，
+      # 头文件 mtime 怎么变都不影响命中。
+      - name: Cache ccache
         uses: actions/cache@v4
         with:
-          path: app/.cxx
-          key: cxx-${{ runner.os }}-${{ env.ABIS }}-ndk${{ env.NDK_VERSION }}-cmake${{ env.CMAKE_VERSION }}-q${{ env.QUICKJS_SHA }}-o${{ env.OPENSSL_SHA }}-l${{ env.LLAMA_SHA }}-${{ hashFiles('app/src/main/cpp/CMakeLists.txt', 'app/src/main/cpp/core/**', 'app/src/main/cpp/ffi/**', 'app/src/main/cpp/image/**', 'app/src/main/cpp/jni/**', 'app/src/main/cpp/js/**', 'app/src/main/cpp/net/**', 'app/src/main/cpp/runtime/**', 'app/src/main/cpp/tools/**', 'app/src/main/rust/baiguard/**') }}
+          path: /home/runner/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ env.ABIS }}-ndk${{ env.NDK_VERSION }}-l${{ env.LLAMA_SHA }}-${{ hashFiles('app/src/main/cpp/**', 'app/src/main/rust/baiguard/**') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ env.ABIS }}-ndk${{ env.NDK_VERSION }}-l${{ env.LLAMA_SHA }}-
+            ccache-${{ runner.os }}-${{ env.ABIS }}-
 
       - name: Fetch third-party sources
         run: |
@@ -113,13 +116,6 @@ jobs:
           ls "$TP/quickjs"/{quickjs.c,dtoa.c,libregexp.c,libunicode.c,cutils.c}
           printf '%s\n' '--- openssl arm64 静态库 ---'
           ls "$TP/android_openssl-master/ssl_3/arm64-v8a"
-          # ninja 只看 mtime：把源码一律按到 2000 年，缓存里的 .o 才会被判定为最新。
-          # 这么做是安全的——缓存 key 已经包含这些源码的 hash，内容一变就换 key、整层重编。
-          find app/src/main/cpp app/src/main/rust/baiguard/src -exec touch -d '2000-01-01 00:00:00' {} +
-          # 但反向还有一处：NDK 每次跑都重新安装，sysroot 头文件的 mtime 是「刚才」，
-          # 比缓存里 16:49 的 .o 还新，ninja 于是判定所有目标过期、全量重编（实测 119 个里重编了 112 个）。
-          # 缓存命中即等于输入完全相同，把整个 .cxx 提到现在，让 .o 比头文件新。
-          if [ -d app/.cxx ]; then find app/.cxx -exec touch {} + ; fi
 
       # 内核的 Rust 层（baiguard）在 CMake 里以 staticlib 形式接进来，需要 Android target 的 std
       - name: Add Rust Android target
@@ -147,8 +143,18 @@ jobs:
           cut -d= -f1 local.properties
 
       - name: Build debug APK
+        env:
+          BAI_CCACHE: '1'
+          CCACHE_DIR: /home/runner/.cache/ccache
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_NOHASHDIR: '1'
+          CCACHE_COMPILERCHECK: content
+          CCACHE_MAXSIZE: 2G
         run: |
           set -eux
+          command -v ccache > /dev/null || sudo apt-get install -y ccache
+          ccache --version | head -1
+          ccache -z
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug \
             -Pbai.abis="${ABIS}" \
@@ -156,6 +162,7 @@ jobs:
             --console=plain \
             -Dorg.gradle.jvmargs="-Xmx6g -XX:MaxMetaspaceSize=1536m -Dfile.encoding=UTF-8" \
             --stacktrace
+          ccache -s || true
 
       - name: List APK
         run: |
