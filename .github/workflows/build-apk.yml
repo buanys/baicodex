@@ -90,10 +90,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ env.ABIS }}-ndk${{ env.NDK_VERSION }}-l${{ env.LLAMA_SHA }}-${{ hashFiles('app/src/main/cpp/**', 'app/src/main/rust/baiguard/**') }}
+          key: ccache-${{ runner.os }}-${{ env.ABIS }}-ndk${{ env.NDK_VERSION }}-l${{ env.LLAMA_SHA }}-${{ hashFiles('app/src/main/cpp/**', 'app/src/main/rust/**') }}
           restore-keys: |
             ccache-${{ runner.os }}-${{ env.ABIS }}-ndk${{ env.NDK_VERSION }}-l${{ env.LLAMA_SHA }}-
             ccache-${{ runner.os }}-${{ env.ABIS }}-
+
+      # 1.18 起 Rust 内核带外部依赖（aes-gcm / hkdf / serde …），cargo 自己管增量，
+      # 把它的 target 目录缓存住，冷启动就不必重新编依赖树
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.bcx-rust-target
+          key: cargo-${{ runner.os }}-${{ env.ABIS }}-${{ hashFiles('app/src/main/rust/Cargo.lock', 'app/src/main/rust/Cargo.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ env.ABIS }}-
 
       - name: Fetch third-party sources
         run: |
@@ -117,7 +127,7 @@ jobs:
           printf '%s\n' '--- openssl arm64 静态库 ---'
           ls "$TP/android_openssl-master/ssl_3/arm64-v8a"
 
-      # 内核的 Rust 层（baiguard）在 CMake 里以 staticlib 形式接进来，需要 Android target 的 std
+      # 1.18 起 Rust 内核（baicodex crate）以 staticlib 接进 CMake，需要 Android target 的 std
       - name: Add Rust Android target
         run: |
           set -eux
@@ -130,17 +140,30 @@ jobs:
           rustup target add aarch64-linux-android
           rustc --version
 
-      - name: Write local.properties
+      # 上游从 1.18 起 debug 也复用 release 签名配置；没有 keystore 时 debug 包是未签名的，
+      # 装上会报「应用未安装」。CI 里现生成一个，只用于这次构建。
+      - name: Write local.properties + CI keystore
         run: |
           set -eux
+          KS="$PWD/ci-release.jks"
+          PASS="baicodex-ci"
+          keytool -genkeypair -keystore "$KS" -alias baicodex \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$PASS" -keypass "$PASS" \
+            -dname "CN=baicodex CI, O=baicodex, C=CN" > /dev/null
           {
             echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
             echo "cmake.dir=${ANDROID_SDK_ROOT}/cmake/${CMAKE_VERSION}"
             echo "stringfog.key=${{ secrets.STRINGFOG_KEY }}"
             echo "baicodex.aes.key=${{ secrets.BAICODEX_AES_KEY }}"
+            echo "bai.sign.store=$KS"
+            echo "bai.sign.storePass=$PASS"
+            echo "bai.sign.alias=baicodex"
+            echo "bai.sign.keyPass=$PASS"
           } > local.properties
           # 不打印密钥，只看键名
           cut -d= -f1 local.properties
+          ls -l "$KS"
 
       - name: Build debug APK
         env:
