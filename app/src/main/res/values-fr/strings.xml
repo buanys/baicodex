@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">EA</string>
+    <string name="app_name">Baicodex</string>
 
     <!-- Première configuration -->
     <string name="ob_sub">Un agent IA local sur votre appareil</string>
@@ -1212,7 +1212,7 @@
     <string name="halt_body">Ce projet n\'est plus en service et va se fermer. Merci pour votre soutien.</string>
     <string name="halt_left">Fermeture dans %1$d s</string>
     <string name="halt_exit">Quitter maintenant</string>
-    <string name="a11y_label">EA Contrôle d\'écran</string>
+    <string name="a11y_label">BaiAgent Contrôle d\'écran</string>
     <string name="a11y_desc">Permet à l\'IA de lire les contrôles à l\'écran et les captures, puis de taper, glisser, appuyer longuement et saisir du texte à votre place. Utilisé uniquement pour les tâches que vous lancez.</string>
     <string name="ag_capsule_fmt">%1$s en cours</string>
     <string name="ob_step_lang">Étape 1 : choisissez la langue de l\'interface. Le réglage système est sélectionné ; validez pour continuer.</string>

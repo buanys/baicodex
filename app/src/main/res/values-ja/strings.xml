@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">EA</string>
+    <string name="app_name">Baicodex</string>
 
     <!-- オンボーディング -->
     <string name="ob_sub">デバイス上のローカル AI エージェント</string>
@@ -1212,7 +1212,7 @@
     <string name="halt_body">このプロジェクトは運営を終了しました。まもなく終了します。これまでのご支援に感謝します。</string>
     <string name="halt_left">%1$d 秒後に自動終了します</string>
     <string name="halt_exit">今すぐ終了</string>
-    <string name="a11y_label">EA 画面操作</string>
+    <string name="a11y_label">BaiAgent 画面操作</string>
     <string name="a11y_desc">AI が現在の画面のコントロールとスクリーンショットを読み取り、タップ・スワイプ・長押し・文字入力を代行します。あなたが開始したタスクでのみ使用します。</string>
     <string name="ag_capsule_fmt">%1$s を実行中</string>
     <string name="ob_step_lang">ステップ 1：表示言語を選びます。既定は端末の設定に従うので、選んでから次へ進んでください。</string>

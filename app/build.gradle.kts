@@ -50,7 +50,7 @@ android {
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "io.github.ea"
+        applicationId = "b.ai"
         minSdk = 24
         targetSdk = 34
         versionCode = 54

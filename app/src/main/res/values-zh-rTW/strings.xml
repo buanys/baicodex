@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">EA</string>
+    <string name="app_name">Baicodex</string>
 
     <!-- 引導流程 -->
     <string name="ob_sub">裝置上的本地 AI Agent</string>
@@ -1153,7 +1153,7 @@
     <string name="pk_dir">目錄：%1$s</string>
     <string name="pk_secret_save">儲存密鑰</string>
     <!-- 无障碍：屏幕操作 -->
-    <string name="a11y_label">EA 屏幕操作</string>
+    <string name="a11y_label">BaiAgent 屏幕操作</string>
     <string name="a11y_desc">让 AI 读取当前屏幕的控件与截图，并代你点击、滑动、长按、输入文字。仅在你发起任务时使用。</string>
     <string name="shiz_manual">Shizuku 裡已經選過「拒絕且不再詢問」，這裡不會再彈窗：打開 Shizuku → 授權應用 → 找到 BaiAgent 打開開關</string>
     <string name="shiz_open_app">打開應用</string>

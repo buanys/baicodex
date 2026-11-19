@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">EA</string>
+    <string name="app_name">Baicodex</string>
 
     <!-- 引导流程 -->
     <string name="ob_sub">设备上的本地 AI Agent</string>
@@ -1170,7 +1170,7 @@
     <string name="pk_dir">目录：%1$s</string>
     <string name="pk_secret_save">保存密钥</string>
     <!-- 无障碍：屏幕操作 -->
-    <string name="a11y_label">EA 屏幕操作</string>
+    <string name="a11y_label">Baicodex 屏幕操作</string>
     <string name="a11y_desc">让 AI 读取当前屏幕的控件与截图，并代你点击、滑动、长按、输入文字。仅在你发起任务时使用。</string>
     <string name="ag_capsule_fmt">正在进行%1$s</string>
     <string name="shiz_manual">Shizuku 里已经选过「拒绝且不再询问」，这里不会再弹窗：打开 Shizuku → 授权应用 → 找到 BaiAgent 打开开关</string>
@@ -1791,7 +1791,7 @@
     <string name="island_no_perm">通知权限未开启：系统会直接丢掉任务通知，点这里去开</string>
     <string name="island_ch_off">「任务进度」通知分类被关闭了：通知不会出现，点这里去开</string>
     <string name="island_stop">停止任务</string>
-    <string name="island_task_title">EA 任务</string>
+    <string name="island_task_title">Baicodex 任务</string>
     <string name="island_running">正在执行任务…</string>
     <string name="island_bg_keep">任务在后台继续运行</string>
     <string name="island_done">任务已完成</string>
