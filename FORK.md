@@ -3,8 +3,35 @@
 这是 `mubai0122/baicodex` 的个人分支，自己用、自己维护。
 
 - **基线**：`v1.18.2-base`（上游 1.18.2 + 本地 CI 改动）。任何时候 `git checkout v1.18.2-base` 都能回到"能跑的原版"。
-- **上游**：`upstream` remote 只作参考，不再自动跟。需要某个修复时手动 `git cherry-pick <sha>`，不做整树 merge。
 - **主分支**：`main` 永远保持"能编、能装、能跑"。所有大改在分支上做。
+
+## 分支模型
+
+| 分支 | 是什么 | 跟踪谁 |
+|---|---|---|
+| `main` | 我们自己的版本，永远可编可装 | `origin/main` |
+| `vendor` | 上游原样镜像，只用来看和拉，一行不改 | `upstream/main`（`ff only`） |
+| 功能分支 | 大改时开，验完再合进 main | — |
+
+**同步上游**（冲突只会在 merge 那一步出现）：
+
+```sh
+git checkout vendor && git pull        # 只快进，不产生合并提交
+git checkout main && git merge vendor
+```
+
+**看我们到底改了什么**：
+
+```sh
+git diff vendor..main --stat
+```
+
+**从上游挑单个修复**（不想整树同步时）：
+
+```sh
+git checkout main && git cherry-pick <sha>
+```
+
 
 ## 本地改动清单
 
