@@ -208,6 +208,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: baicodex-debug-${{ github.sha }}
-          path: app/build/outputs/apk/debug/*.apk
+          # 分包模式下 AGP 还会额外产出一个 app-universal-debug.apk，
+          # 对我们只是把同样的东西再打包一遍，排除掉能省一半流量
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            !app/build/outputs/apk/debug/app-universal-debug.apk
           if-no-files-found: error
           retention-days: 14
