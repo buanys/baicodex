@@ -28,6 +28,9 @@ import java.security.SecureRandom
 
 //网易云登录只走 music.163.com 自己的 weapi 通道：明文 /api/ 会被服务端当成旧客户端，登录接口直接拒
 object NeteaseLogin {
+
+    /** 验证码登录是否成功：成功文案由本文件产出，判定也只在这里 */
+    fun loginOk(text: String): Boolean = text.startsWith("登录成功")
     private const val TAG = "bai.music.login"
     private const val BASE = "https://music.163.com"
     private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +

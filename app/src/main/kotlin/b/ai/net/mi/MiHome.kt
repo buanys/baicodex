@@ -14,18 +14,25 @@
 
 package b.ai.net.mi
 
+import b.ai.core.misc.Res
+
 /**
  * 米家总入口：云端同步台账，控制时「局域网优先、云端兜底」。
  * 局域网快且不吃外网；token 缺失或不在同一网段时自动回落云 MIoT，用户无感。
  */
 object MiHome {
     /** 同步设备清单：拉云端并进台账，返回一句给人看的结果 */
-    fun sync(): String {
-        if (!MiAuth.logged()) return "还没登录米家账号"
+    fun sync(): String = syncOut().text
+
+    /** 同步台账并带成败：成败由这里判定，上层不再从「还没登录 / 没拉到」里猜 */
+    fun syncOut(): Res {
+        if (!MiAuth.logged()) return Res.fail("还没登录米家账号")
         val list = MiCloud.devices()
-        if (list.isEmpty()) return "云端没拉到设备（登录态可能过期，或账号下确实没有设备）"
+        if (list.isEmpty()) {
+            return Res.fail("云端没拉到设备（登录态可能过期，或账号下确实没有设备）")
+        }
         MiStore.merge(list)
-        return "同步到 ${list.size} 台设备"
+        return Res.ok("同步到 ${list.size} 台设备")
     } //同步台账
 
     /** 扫局域网，把探到的 IP 回填台账；返回发现的台数 */

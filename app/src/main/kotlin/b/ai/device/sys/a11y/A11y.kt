@@ -56,6 +56,18 @@ object A11y {
 
     fun ready(): Boolean = svc != null
 
+    /**
+     * 这个返回值是不是失败。
+     *
+     * 无障碍的操作只能回字符串（成功也是字符串），所以失败的判定归这里：
+     * 所有失败文案都由本文件产出，改文案只要同步改这一处，调用方不必再从中文里猜。
+     */
+    fun failed(text: String): Boolean =
+        text.startsWith("无障碍服务未开启") || text.startsWith("拿不到") ||
+            text.startsWith("不支持") || text.startsWith("输入失败") ||
+            text.startsWith("手势没发出去") || text.startsWith("当前界面没有输入框焦点") ||
+            text.startsWith("系统低于 Android 11")
+
     /** 没权限时置 true：界面据此弹引导，用户开完再置回 false */
     val needPerm = androidx.compose.runtime.mutableStateOf(false)
 

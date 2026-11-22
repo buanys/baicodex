@@ -1601,7 +1601,8 @@ object Tools {
                 Cfg.a2aPort = port
                 Cfg.a2aOn = true
                 val msg = A2aSrv.start(port)
-                if (!msg.startsWith("已监听")) {
+                //成败问状态：服务真在监听才算开成功，返回的文案只当说明用
+                if (!A2aSrv.running) {
                     Cfg.a2aOn = false
                     return ToolOutcome(false, "开不了接活服务：" + msg, Route.SANDBOX)
                 }
@@ -1945,7 +1946,7 @@ object Tools {
             //新增平台在这里加分支，同时在 core/Search.kt 的 providers 里登记
             else -> "搜索失败：平台 ${provider.id} 还没接入"
         }
-        return ToolOutcome(!r.startsWith("未配置") && !r.startsWith("搜索失败"), r, Route.SANDBOX)
+        return ToolOutcome(!Search.failed(r), r, Route.SANDBOX)
     } //联网搜索
 
     /** 12306 查询：只读网络请求，走应用身份，不需要 root / Shizuku */
@@ -1963,13 +1964,8 @@ object Tools {
                 trainNo = a.optString("train_no").takeIf { it.isNotBlank() }
             )
         }.getOrElse { return ToolOutcome(false, "查询失败：${it.message}", Route.SANDBOX) }
-        val ok = !FAIL_HEADS.any { text.startsWith(it) }
-        return ToolOutcome(ok, text, Route.SANDBOX)
+        return ToolOutcome(!Rail.failed(text), text, Route.SANDBOX)
     } //火车票查询
-
-    private val FAIL_HEADS = listOf(
-        "查询失败", "找不到", "日期格式不对", "中转要指定", "没查到经停站", "第一段", "第二段"
-    )
 
     /** 屏幕操作：全部动作走 A11y；没权限就置位让界面弹引导，而不是只回一句失败 */
     private fun screen(a: JSONObject): ToolOutcome {
@@ -2016,8 +2012,7 @@ object Tools {
             "apps", "list" -> apps(a.optString("app"))
             else -> "不支持的 action：$act（可用 see / tree / shot / tap / long / swipe / text / key / launch / apps / start / quiet）"
         }
-        val bad = t.contains("未开启") || t.contains("失败") || t.contains("不支持") || t.contains("拿不到")
-        return ToolOutcome(!bad, t, Route.SANDBOX)
+        return ToolOutcome(!b.ai.device.sys.a11y.A11y.failed(t), t, Route.SANDBOX)
     } //屏幕操作分发
 
     /** 截图落盘到私有目录 img/shots，路径回给模型；勾了图片输入的模型可以据此看图 */
@@ -2305,9 +2300,8 @@ object Tools {
     private fun miDevices(a: JSONObject): ToolOutcome {
         val act = a.optString("action", "list").trim().lowercase()
         if (act == "sync") {
-            val r = MiHome.sync()
-            val ok = !r.startsWith("还没登录") && !r.contains("没拉到")
-            return ToolOutcome(ok, r, Route.SANDBOX)
+            val r = MiHome.syncOut()
+            return ToolOutcome(r.ok, r.text, Route.SANDBOX)
         }
         if (act == "add") {
             val did = a.optString("did").trim()
@@ -2511,7 +2505,7 @@ object Tools {
                 return ToolOutcome(r.isEmpty(), r.ifEmpty { "验证码已发出，转给用户" }, Route.SANDBOX)
             }
             val r = NeteaseLogin.loginByCaptcha(a.optString("phone"), a.optString("code"), area)
-            return ToolOutcome(r.startsWith("登录成功"), r, Route.SANDBOX)
+            return ToolOutcome(NeteaseLogin.loginOk(r), r, Route.SANDBOX)
         }
         if (act == "verify") {
             if (id != "netease") {

@@ -46,6 +46,14 @@ data class Train(
  * 再 GET /otn/{path} 拿 result[]；经停走 /otn/czxx/queryByTrainNo。
  */
 object Rail {
+
+    /** 失败文案的开头：本文件产出，判定也只在这里 */
+    private val FAIL_HEADS = listOf(
+        "查询失败", "找不到", "日期格式不对", "中转要指定", "没查到经停站", "第一段", "第二段"
+    )
+
+    /** 这次 run() 的返回是不是失败 */
+    fun failed(text: String): Boolean = FAIL_HEADS.any { text.startsWith(it) }
     private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/120.0.0.0 Mobile Safari/537.36"
     private const val BASE = "https://kyfw.12306.cn"

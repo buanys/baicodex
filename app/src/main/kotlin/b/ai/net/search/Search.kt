@@ -34,6 +34,10 @@ data class SearchProvider(
  * 平台清单由用户后续提供，往 [providers] 里加一行、再在 Tools.search 里加一个分支即可。
  */
 object Search {
+
+    /** 搜索结果的成败判定：各 provider 的失败文案都以上面这两个开头 */
+    fun failed(text: String): Boolean =
+        text.startsWith("未配置") || text.startsWith("搜索失败")
     //平台清单：加平台在这里加一行，再在 Tools.search 里加一个分支
     val providers: List<SearchProvider> = listOf(
         SearchProvider(
