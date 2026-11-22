@@ -36,6 +36,13 @@ class TurnEngineTest {
 
     private fun replyText(text: String): JSONObject = JSONObject().put("content", text)
 
+    /** 参数各不相同的一次调用：用来避开重复调用护栏 */
+    private fun replyWithCallAt(i: Int): JSONObject {
+        val f = JSONObject().put("name", "read_file").put("arguments", """{"i":$i}""")
+        val one = JSONObject().put("id", "c$i").put("type", "function").put("function", f)
+        return JSONObject().put("content", "").put("tool_calls", JSONArray().put(one))
+    }
+
     /** 脚本化宿主：按顺序吐响应，记录内核回调了什么 */
     private class FakeHost(
         val replies: MutableList<Any>,
@@ -94,6 +101,10 @@ class TurnEngineTest {
         override suspend fun onToolResult(call: ToolCall, out: ToolOut) { results.add(out) }
         override fun onStatus(stage: Stage, count: Int) = Unit
         override suspend fun beforeTurn() = Unit
+
+        override suspend fun appendUser(text: String) { nudges.add(text) }
+
+        val nudges = mutableListOf<String>()
     }
 
     @Test
@@ -175,5 +186,46 @@ class TurnEngineTest {
         assertEquals(1, calls.size)
         assertEquals("a", calls[0].name)
         assertEquals("{}", calls[0].arguments)
+    }
+
+    @Test
+    fun `步数预算跑满就收口，不再无限调工具`() = runBlocking {
+        val replies = MutableList(50) { replyWithCallAt(it) }
+        replies.add(replyText("收口了"))
+        val host = FakeHost(replies)
+        TurnEngine(host).run()
+
+        assertEquals(1, host.answers.size)
+        assertEquals("收口了", host.answers[0])
+        assertTrue(host.nudges.any { it.contains("步数到上限") })
+        //40 步预算用完就停，不会把 50 条回复全吃完
+        assertEquals(40, host.cards)
+    }
+
+    @Test
+    fun `同一个调用刷到第四次就不再执行，第八次直接停`() = runBlocking {
+        val replies = MutableList(10) { replyWithCall() }
+        replies.add(replyText("收口了"))
+        var executed = 0
+        val host = FakeHost(replies, exec = { executed++; ToolOut("echo", Route.SANDBOX, true, 1L) })
+        TurnEngine(host).run()
+
+        //第一次、第二次真跑；第三到第七次拦下不跑；第八次熔断
+        assertEquals(2, executed)
+        assertEquals(8, host.cards)
+        assertTrue(host.nudges.any { it.contains("这一轮到这里为止") })
+    }
+
+    @Test
+    fun `连续十次工具失败就收口`() = runBlocking {
+        val replies = MutableList(20) { replyWithCallAt(it) }
+        replies.add(replyText("我失败了"))
+        val host = FakeHost(replies, exec = { ToolOut("boom", Route.SANDBOX, false, 1L) })
+        TurnEngine(host).run()
+
+        assertEquals(10, host.cards)
+        //第六次会提醒换做法，第十次收口
+        assertTrue(host.nudges.any { it.contains("连续 6 次工具失败") })
+        assertTrue(host.nudges.any { it.contains("这一轮到这里为止") })
     }
 }

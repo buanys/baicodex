@@ -78,4 +78,7 @@ interface TurnHost {
 
     /** 一轮开始前的准备：后端快照、压缩检查、通知栏 */
     suspend fun beforeTurn()
+
+    /** 往会话里追加一条用户消息：预算耗尽、连续失败这类「系统催办」走这里 */
+    suspend fun appendUser(text: String)
 }

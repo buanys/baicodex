@@ -1485,6 +1485,11 @@ object Agent {
         compact(false)
     }
 
+    /** 内核的催办消息（预算耗尽、连续失败）也走正常落库路径，模型下一轮才看得见 */
+    override suspend fun appendUser(text: String) {
+        append(ChatMsg(role = "user", content = text))
+    }
+
     /** 只许单独跑的工具：要弹问答/计划/子智能体/工作流，或独占屏幕、独占 proot 会话 */
     private fun serialOnly(c: ToolCall): Boolean =
         c.name == Tools.ASK || c.name == Tools.SUB || c.name == Tools.FLOW_RUN ||
