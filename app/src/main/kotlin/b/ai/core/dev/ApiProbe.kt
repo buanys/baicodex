@@ -19,6 +19,7 @@ import android.graphics.Color
 import android.util.Base64
 import b.ai.core.plugin.skill.Providers
 import b.ai.net.api.llm.LlmClient
+import b.ai.net.api.llm.LlmOpts
 import b.ai.net.api.llm.text
 import org.json.JSONArray
 import org.json.JSONObject
@@ -80,7 +81,7 @@ object ApiProbe {
         val t0 = System.currentTimeMillis()
         return try {
             val msgs = JSONArray().put(JSONObject().put("role", "user").put("content", "测试测试"))
-            val msg = cli.chat(model, msgs, 0.0, think = false, tools = JSONArray())
+            val msg = cli.chat(model, msgs, 0.0, think = false, tools = JSONArray(), opts = LlmOpts.PLAIN)
             val ms = System.currentTimeMillis() - t0
             val body = msg.text("content").trim()
             if (body.isEmpty()) R(false, ms, "", "通了但没返回正文，可能内容都放进了思考字段")
@@ -101,7 +102,7 @@ object ApiProbe {
                         .put("image_url", JSONObject().put("url", BLACK))
                 )
             val msgs = JSONArray().put(JSONObject().put("role", "user").put("content", parts))
-            val msg = cli.chat(model, msgs, 0.0, think = false, tools = JSONArray())
+            val msg = cli.chat(model, msgs, 0.0, think = false, tools = JSONArray(), opts = LlmOpts.PLAIN)
             val ms = System.currentTimeMillis() - t0
             val body = msg.text("content").trim()
             when {

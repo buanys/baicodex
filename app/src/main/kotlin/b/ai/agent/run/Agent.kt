@@ -36,6 +36,12 @@ import b.ai.core.cfg.env.Env
 import b.ai.core.cfg.env.PromptVars
 import b.ai.agent.flow.Flow
 import b.ai.agent.flow.Flows
+import b.ai.agent.run.engine.AfterAnswer
+import b.ai.agent.run.engine.Gate
+import b.ai.agent.run.engine.Stage
+import b.ai.agent.run.engine.ToolOut
+import b.ai.agent.run.engine.TurnEngine
+import b.ai.agent.run.engine.TurnHost
 import b.ai.agent.memory.Memory
 import b.ai.native.security.Mask
 import b.ai.core.model.chat.MsgMeta
@@ -514,7 +520,7 @@ object Agent {
                 //标题生成走「功能模型」里配的那条；没配就跟随当前聊天
                 val m = b.ai.core.model.chat.FnModel.conn(b.ai.core.model.chat.FnModel.TITLE)
                 LlmClient(m[0], m[1], b.ai.core.model.chat.FnModel.auth(b.ai.core.model.chat.FnModel.TITLE), protocol = m[4])
-                    .chat(m[3], pay, temperature = 0.3)
+                    .chat(m[3], pay, temperature = 0.3, opts = Cfg.opts(m[2], m[0]))
             }
         }.getOrNull() ?: return
         val line = resp.text("content").lines().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
@@ -544,7 +550,7 @@ object Agent {
 
 
     // ───────────────────────── 运行通道（按会话隔离）─────────────────────────
-    private class Run(val sid: String) {
+    private class Run(val sid: String) : TurnHost {
     var busy by mutableStateOf(false)
         private set
     var status by mutableStateOf("")
@@ -635,8 +641,6 @@ object Agent {
 
     /** 最近一条用户消息 id：重发时用它原地重跑 */
     private fun lastUserId(): Long = messages.lastOrNull { it.role == "user" }?.id ?: -1L
-    /** 一个回合里工具并发执行的上限：再多也不会更快，反而抢 IO 与内存 */
-    private val PARALLEL_TOOLS = 4
 
     /**发送排队：忙的时候进来的消息按顺序等着，上一轮收工自动发下一条 */
     var queue by mutableStateOf<List<QueuedMsg>>(emptyList())
@@ -1143,7 +1147,7 @@ object Agent {
 
     private fun keys(): List<String> =
         Cfg.keyList(Cfg.profileId).ifEmpty { listOf(Cfg.apiKey) }.filter { it.isNotBlank() }
-    private fun keyCount(): Int = keys().size.coerceAtLeast(1)
+    private fun keyTotal(): Int = keys().size.coerceAtLeast(1)
     private fun keyOf(i: Int): String {
         val list = keys()
         if (list.isEmpty()) return Cfg.apiKey
@@ -1157,386 +1161,339 @@ object Agent {
         return msg.startsWith("网络错误")
     } //是否值得换 Key
 
+    /** 循环内核：控制流在 TurnEngine，副作用全部通过 TurnHost 回到这一层 */
+    private val engine = TurnEngine(this)
+
+    /** 最近一次请求体，供统计与排障用 */
+    private var lastPayload: JSONArray? = null
+
+    /** 本次请求的起点与首包时刻，算首字延迟用 */
+    private var reqT0 = 0L
+    private var reqFirstAt = 0L
+
     private suspend fun runLoop() {
-        val ctx = currentCoroutineContext()
+        engine.run()
+    } //模型 → 工具 → 回传
+
+    // ── TurnHost：内核向宿主索要的能力，实现是原来 runLoop 里的那些代码 ──
+
+    override suspend fun isActive(): Boolean = currentCoroutineContext().isActive
+
+    override fun isSuperseded(): Boolean = gen != runGen
+
+    override suspend fun payload(): JSONArray {
+        val p = withContext(Dispatchers.IO) { inCtx { buildPayload() } }
+        lastPayload = p
+        return p
+    }
+
+    override fun keyCount(): Int = keyTotal()
+
+    override fun advanceKey() {
+        keyIdx = (keyIdx + 1) % keyTotal()
+    }
+
+    override fun isRetryable(e: Throwable): Boolean = e is LlmException && retryable(e)
+
+    override fun onKeyRetry() {
+        status = host.getString(R.string.ag_key_retry)
+        sContent.setLength(0)
+        sReason.setLength(0)
+        chunks.value = "" to ""
+    }
+
+    /** 真发一次请求：流式优先，一个字都没收到时回退整包 */
+    override suspend fun ask(payload: JSONArray, onDelta: (String, String) -> Unit): JSONObject {
         val bk = be ?: backendNow().also { be = it }
         val temp = bk.temperature.takeIf { it >= 0f }?.toDouble()
+        val job = currentCoroutineContext()[Job]
+        val client = LlmClient(bk.baseUrl, bk.key(keyIdx), Providers.byId(bk.providerId).auth, protocol = bk.protocol)
+        sContent.setLength(0)
+        sReason.setLength(0)
+        chunks.value = "" to ""
+        status = host.getString(R.string.ag_ask_model)
+        busySince = System.currentTimeMillis()
+        reqT0 = System.currentTimeMillis()
+        reqFirstAt = 0L
+        //流式增量既进宿主的镜像缓冲（界面要显示），也交给引擎判空
+        val mirror: (String, String) -> Unit = { t, r ->
+            if (t.isNotEmpty() || r.isNotEmpty()) {
+                if (reqFirstAt == 0L) reqFirstAt = System.currentTimeMillis()
+            }
+            if (t.isNotEmpty()) sContent.append(t)
+            if (r.isNotEmpty()) sReason.append(r)
+            chunks.value = sContent.toString() to sReason.toString()
+            onDelta(t, r)
+        }
+        return withContext(Dispatchers.IO) {
+            //本轮的工具定义与请求策略都在这里定死：不再让网络层回头读全局配置
+            val defs = Tools.definitions()
+            val opts = Cfg.opts(bk.providerId, bk.baseUrl, bk.toolCall)
+            val streamed = if (bk.noStream) {
+                //关了流式就整包等：端点不支持 SSE 时也走这条，界面上没有逐字过程
+                status = host.getString(R.string.ag_stream_off)
+                client.chat(bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams, defs, opts)
+            } else try {
+                client.chatStream(
+                    bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams,
+                    defs, opts,
+                    shouldStop = { job?.isActive != true },
+                    onDelta = mirror
+                )
+            } catch (e: LlmException) {
+                //已经吐出来的内容不能靠整包重试洗一遍；一个字没收到才回退
+                if (sContent.isEmpty() && sReason.isEmpty()) null else throw e
+            }
+            streamed ?: run {
+                status = host.getString(R.string.ag_stream_fallback)
+                client.chat(bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams, defs, opts)
+            }
+        }
+    }
+
+    override suspend fun onAssistant(
+        content: String,
+        reasoning: String,
+        calls: List<ToolCall>,
+        raw: JSONObject
+    ) {
+        chunks.value = "" to ""
+        sContent.setLength(0)
+        sReason.setLength(0)
+        status = host.getString(R.string.ag_tidy)
+        val t1 = System.currentTimeMillis()
+        val meta = metaOf(raw, lastPayload ?: JSONArray(), content, reasoning, reqT0, t1, reqFirstAt)
+        //输出侧脱敏：正文与推理都过一遍，落库的与下一轮回传的都是打码后的文本
+        val shown = Mask.text(content)
+        val think = Mask.text(reasoning)
+        //用量独立记账：一次请求一行，删会话不回滚
+        withContext(Dispatchers.IO) {
+            Repo.recordUsage(
+                meta.at, meta.provider, meta.model, runSid ?: sessionId ?: "",
+                meta.promptTokens, meta.cachedTokens, meta.completionTokens
+            )
+        }
+        //真实引擎分句更碎，普通模式仍是整段按句号切
+        val segs = if (calls.isEmpty() && Cfg.waifuMode) {
+            if (Cfg.waifuReal) Waifu.splitReal(shown) else Waifu.split(shown)
+        } else listOf(shown)
+        segs.forEachIndexed { n, seg ->
+            val head = n == 0
+            val tail = n == segs.lastIndex
+            if (!head) {
+                //分句间隙：可选用「对方正在输入」占位，时长 = 本条字数 × 打字速度
+                val gap = Waifu.gapMs(seg, Cfg.waifuTypeMs)
+                if (Cfg.waifuTyping && segs.size > 1) {
+                    typing = true
+                    try {
+                        delay(gap)
+                    } finally {
+                        typing = false
+                    }
+                } else {
+                    delay(gap)
+                }
+            }
+            append(
+                ChatMsg(
+                    role = "assistant",
+                    content = seg,
+                    toolCalls = if (head) calls else emptyList(),
+                    reasoning = if (head) think else "",
+                    //统计只挂在最后一条：分句时它会显示在所有气泡之后，不在中间那条框里
+                    meta = if (tail) meta else null
+                )
+            )
+        }
+    }
+
+    override suspend fun onAnswer(content: String): AfterAnswer {
+        val shown = Mask.text(content)
+        //计划模式：正文当计划给用户过一遍，没点「确定执行」绝不动手
+        if (Cfg.agentMode == AgentMode.PLAN) {
+            when (val v = approvePlan(shown)) {
+                PlanVerdict.Confirm -> {
+                    //确认后先退出计划模式，权限面才重新放开
+                    Cfg.agentMode = AgentMode.STANDARD
+                    append(
+                        ChatMsg(
+                            role = "user",
+                            content = "计划已确认，已退出计划模式，按上面的计划开始执行。"
+                        )
+                    )
+                    status = host.getString(R.string.ag_think_again)
+                    busySince = System.currentTimeMillis()
+                    return AfterAnswer.Continue
+                }
+                is PlanVerdict.Revise -> {
+                    append(
+                        ChatMsg(
+                            role = "user",
+                            content = "这一版计划先不执行，按下面的意见调整后重新给一版完整计划：\n" + v.note
+                        )
+                    )
+                    status = host.getString(R.string.ag_think_again)
+                    busySince = System.currentTimeMillis()
+                    return AfterAnswer.Continue
+                }
+                PlanVerdict.Dismiss -> {
+                    if (isFront()) Speak.say(shown)
+                    return AfterAnswer.Stop
+                }
+            }
+        }
+        //本轮没有工具调用就是最终答案：开了「回复朗读」就念出来
+        if (isFront()) Speak.say(shown)
+        return AfterAnswer.Stop
+    }
+
+    override suspend fun cardStart(call: ToolCall): Long = beginTool(call.name, call.arguments)
+
+    override fun cardEnd(seq: Long) = endTool(seq)
+
+    override suspend fun handleSpecial(call: ToolCall, position: Int, total: Int): Boolean {
+        when (call.name) {
+            //提问工具先接住：不弹工具确认框，直接把面板推给用户并等作答
+            Tools.ASK -> {
+                status = host.getString(R.string.ag_ask_fmt, position, total)
+                busySince = System.currentTimeMillis()
+                val qa = runCatching { JSONObject(call.arguments) }.getOrElse { JSONObject() }
+                appendToolMsg(call, askUser(qa), Route.SANDBOX, false)
+                return true
+            }
+            //分智能体：免确认，直接并行跑完把合并结果当一次工具输出回灌
+            Tools.SUB -> {
+                val qa = runCatching { JSONObject(call.arguments) }.getOrElse { JSONObject() }
+                val tasks = subTasks(qa)
+                if (tasks.isEmpty()) {
+                    appendToolMsg(call, "没有可执行的子任务（tasks 为空）。", Route.SANDBOX, true)
+                    return true
+                }
+                status = host.getString(R.string.ag_sub_start, tasks.size)
+                busySince = System.currentTimeMillis()
+                val tExec = System.currentTimeMillis()
+                val text = inCtx {
+                    SubAgents.run(
+                        tasks, qa.optInt("rounds", SubAgents.DEFAULT_ROUNDS),
+                        onStatus = { s -> status = s },
+                        confirm = { n, a, id -> confirmFromSub(n, a, id) }
+                    )
+                }
+                status = host.getString(R.string.ag_think_again)
+                busySince = System.currentTimeMillis()
+                appendToolMsg(call, text, Route.SANDBOX, false, System.currentTimeMillis() - tExec)
+                return true
+            }
+            //工作流：按步骤顺序跑，每步一个分智能体，失败按每步策略重试或跳过
+            Tools.FLOW_RUN -> {
+                val qa = runCatching { JSONObject(call.arguments) }.getOrElse { JSONObject() }
+                val flow = flowOf(qa)
+                if (flow == null) {
+                    appendToolMsg(call, "没有可执行的工作流：要么给 flow_id，要么给 name + steps。", Route.SANDBOX, true)
+                    return true
+                }
+                status = "工作流「" + flow.name + "」开始，共 " + flow.steps.size + " 步"
+                busySince = System.currentTimeMillis()
+                val tExec = System.currentTimeMillis()
+                val out = inCtx {
+                    FlowRunner.run(
+                        flow,
+                        onStatus = { s -> status = s },
+                        confirm = { n, a, id -> confirmFromSub(n, a, id) }
+                    )
+                }
+                if (flow.id.isNotBlank()) Flows.mark(flow.id, out.ok, out.text)
+                status = host.getString(R.string.ag_think_again)
+                busySince = System.currentTimeMillis()
+                appendToolMsg(call, out.text, Route.SANDBOX, !out.ok, System.currentTimeMillis() - tExec)
+                return true
+            }
+        }
+        return false
+    }
+
+    override suspend fun gate(call: ToolCall, position: Int, total: Int): Gate {
+        //当前模式禁掉的工具直接回绝：定义没下发，模型仍可能凭记忆硬调
+        if (!Tools.allowed(call.name)) {
+            return Gate.Reject("当前运行模式不允许调用「" + Tools.label(call.name) + "」，本次没有执行。")
+        }
+        //缺系统权限时工具一律直接拒：不弹确认框，也别让模型反复试同一调用
+        if (!Perms.ok(App.self)) {
+            val lack = Perms.missing(App.self).joinToString("、") { Perms.label(it) }
+            return Gate.Reject(
+                "缺少系统权限（$lack），已直接拒绝本次工具调用。请到系统设置 → 应用 → 权限里重新开启。"
+            )
+        }
+        status = host.getString(R.string.ag_wait_fmt, Tools.label(call.name), position, total)
+        busySince = System.currentTimeMillis()
+        if (!decide(call)) return Gate.Reject("用户拒绝执行该工具调用，未做任何改动。")
+        return Gate.Allow
+    }
+
+    override fun isExclusive(call: ToolCall): Boolean = serialOnly(call)
+
+    override suspend fun execute(call: ToolCall, position: Int, total: Int, serial: Boolean): ToolOut {
+        //并发批里没有逐条状态与顶部胶囊：原来那条路径本来就没有，保持一致
+        if (serial) {
+            status = host.getString(R.string.ag_run_fmt, Tools.label(call.name), position, total)
+            busySince = System.currentTimeMillis()
+        }
+        val args = runCatching { JSONObject(call.arguments) }.getOrElse { JSONObject() }
+        if (serial && !quietCall(call.name, args)) {
+            if (isFront()) b.ai.device.sys.host.Capsule.show(host.getString(R.string.ag_capsule_fmt, Tools.label(call.name)))
+        }
+        val tTool = System.currentTimeMillis()
+        return try {
+            val r = runCatching { inCtx { withContext(Dispatchers.IO) { Tools.execute(call.name, args) } } }
+            val ms = System.currentTimeMillis() - tTool
+            val o = r.getOrNull()
+            if (o != null) {
+                ToolOut(o.text, o.route, o.ok, ms)
+            } else {
+                val e = r.exceptionOrNull()
+                ToolOut(
+                    "工具执行异常：" + (e?.message ?: e?.javaClass?.simpleName.orEmpty()),
+                    Route.SANDBOX,
+                    false,
+                    ms
+                )
+            }
+        } finally {
+            if (serial && isFront()) b.ai.device.sys.host.Capsule.hide()
+        }
+    }
+
+    override suspend fun onToolResult(call: ToolCall, out: ToolOut) {
+        appendToolMsg(call, out.text, out.route, !out.ok, out.ms)
+    }
+
+    override fun onStatus(stage: Stage, count: Int) {
+        status = when (stage) {
+            Stage.Asking -> host.getString(R.string.ag_ask_model)
+            Stage.Thinking -> host.getString(R.string.ag_think_again)
+            Stage.Parallel -> host.getString(R.string.ag_par_fmt, count)
+        }
+    }
+
+    override suspend fun beforeTurn() {
+        be = be ?: backendNow()
         status = host.getString(R.string.ag_ask_model)
         busySince = System.currentTimeMillis()
         //任务通知：有灵动岛就挂岛，没有就是一条常驻通知；开关关掉时 Island 内部直接返回
         //后台会话不抢岛：同一块全局 UI 只归前台会话
         if (isFront()) runCatching { Island.taskStart(curTitle(), host.getString(R.string.island_running)) }
         compact(false)
-        //无限轮：模型给完最终答案（本轮无工具调用）或用户点停止才退出
-        while (ctx.isActive) {
-            //代际变了（停手或已开新一轮）就立刻退，别把这一轮的结果写回去
-            if (gen != runGen) throw CancellationException("superseded")
-            val payload = withContext(Dispatchers.IO) { inCtx { buildPayload() } }
-            val t0 = System.currentTimeMillis()
-            val firstAt = java.util.concurrent.atomic.AtomicLong(0L)
-            sContent.setLength(0)
-            sReason.setLength(0)
-            chunks.value = "" to ""
-            status = host.getString(R.string.ag_ask_model)
-            busySince = System.currentTimeMillis()
-            val emit: (String, String) -> Unit = { t, r ->
-                if (t.isNotEmpty() || r.isNotEmpty()) {
-                    if (firstAt.get() == 0L) firstAt.set(System.currentTimeMillis())
-                }
-                if (t.isNotEmpty()) sContent.append(t)
-                if (r.isNotEmpty()) sReason.append(r)
-                chunks.value = sContent.toString() to sReason.toString()
-            }
-            val total = keyCount()
-            var attempt = 0
-            val resp = run {
-                while (true) {
-                    val client = LlmClient(bk.baseUrl, bk.key(keyIdx), Providers.byId(bk.providerId).auth, protocol = bk.protocol)
-                    val got = runCatching {
-                        val streamed = withContext(Dispatchers.IO) {
-                            //关了流式就整包等：端点不支持 SSE 时也走这条，界面上没有逐字过程
-                            if (bk.noStream) {
-                                status = host.getString(R.string.ag_stream_off)
-                                client.chat(bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams)
-                            } else try {
-                                client.chatStream(
-                                    bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams,
-                                    shouldStop = { !ctx.isActive },
-                                    onDelta = emit
-                                )
-                            } catch (e: LlmException) {
-                                if (sContent.isEmpty() && sReason.isEmpty()) null else throw e
-                            }
-                        }
-                        streamed ?: run {
-                            status = host.getString(R.string.ag_stream_fallback)
-                            withContext(Dispatchers.IO) {
-                                client.chat(bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams)
-                            }
-                        }
-                    }
-                    val ok = got.getOrNull()
-                    if (ok != null) return@run ok
-                    val e = got.exceptionOrNull()
-                    val empty = sContent.isEmpty() && sReason.isEmpty()
-                    if (e is LlmException && empty && retryable(e) && total > 1 && attempt < total - 1) {
-                        attempt++
-                        keyIdx = (keyIdx + 1) % total
-                        status = host.getString(R.string.ag_key_retry)
-                        sContent.setLength(0)
-                        sReason.setLength(0)
-                        chunks.value = "" to ""
-                        continue
-                    }
-                    throw e ?: LlmException("请求失败")
-                }
-                @Suppress("UNREACHABLE_CODE")
-                throw LlmException("请求失败")
-            }
-            chunks.value = "" to ""
-            sContent.setLength(0)
-            sReason.setLength(0)
-            status = host.getString(R.string.ag_tidy)
-            val content = resp.text("content")
-            val reason = resp.text("reasoning_content")
-                .ifBlank { resp.text("reasoning") }
-            val calls = parseCalls(resp)
-            val t1 = System.currentTimeMillis()
-            val meta = metaOf(resp, payload, content, reason, t0, t1, firstAt.get())
-            //输出侧脱敏：正文与推理都过一遍，落库的与下一轮回传的都是打码后的文本
-            val shown = Mask.text(content)
-            val think = Mask.text(reason)
-            //用量独立记账：一次请求一行，删会话不回滚
-            withContext(Dispatchers.IO) {
-                Repo.recordUsage(
-                    meta.at, meta.provider, meta.model, runSid ?: sessionId ?: "",
-                    meta.promptTokens, meta.cachedTokens, meta.completionTokens
-                )
-            }
-            //真实引擎分句更碎，普通模式仍是整段按句号切
-            val segs = if (calls.isEmpty() && Cfg.waifuMode) {
-                if (Cfg.waifuReal) Waifu.splitReal(shown) else Waifu.split(shown)
-            } else listOf(shown)
-            segs.forEachIndexed { n, seg ->
-                val head = n == 0
-                val tail = n == segs.lastIndex
-                if (!head) {
-                    //分句间隙：可选用「对方正在输入」占位，时长 = 本条字数 × 打字速度
-                    val gap = Waifu.gapMs(seg, Cfg.waifuTypeMs)
-                    if (Cfg.waifuTyping && segs.size > 1) {
-                        typing = true
-                        try {
-                            delay(gap)
-                        } finally {
-                            typing = false
-                        }
-                    } else {
-                        delay(gap)
-                    }
-                }
-                append(
-                    ChatMsg(
-                        role = "assistant",
-                        content = seg,
-                        toolCalls = if (head) calls else emptyList(),
-                        reasoning = if (head) think else "",
-                        //统计只挂在最后一条：分句时它会显示在所有气泡之后，不在中间那条框里
-                        meta = if (tail) meta else null
-                    )
-                )
-            }
-            //本轮没有工具调用就是最终答案：开了「回复朗读」就念出来
-            if (calls.isEmpty()) {
-                //计划模式：正文当计划给用户过一遍，没点「确定执行」绝不动手
-                if (Cfg.agentMode == AgentMode.PLAN) {
-                    when (val v = approvePlan(shown)) {
-                        PlanVerdict.Confirm -> {
-                            //确认后先退出计划模式，权限面才重新放开
-                            Cfg.agentMode = AgentMode.STANDARD
-                            append(
-                                ChatMsg(
-                                    role = "user",
-                                    content = "计划已确认，已退出计划模式，按上面的计划开始执行。"
-                                )
-                            )
-                            status = host.getString(R.string.ag_think_again)
-                            busySince = System.currentTimeMillis()
-                            continue
-                        }
-                        is PlanVerdict.Revise -> {
-                            append(
-                                ChatMsg(
-                                    role = "user",
-                                    content = "这一版计划先不执行，按下面的意见调整后重新给一版完整计划：\n" + v.note
-                                )
-                            )
-                            status = host.getString(R.string.ag_think_again)
-                            busySince = System.currentTimeMillis()
-                            continue
-                        }
-                        PlanVerdict.Dismiss -> {
-                            if (isFront()) Speak.say(shown)
-                            break
-                        }
-                    }
-                }
-                if (isFront()) Speak.say(shown)
-                break
-            }
-            //模型一返回调用就先把卡片全摆出来转圈：排队里的、等确认的、等作答的都看得见
-            val seqs = calls.map { beginTool(it.name, it.arguments) }
-            //单条调用：要交互或抢独占资源的走这里
-            suspend fun one(i: Int) {
-                val c = calls[i]
-                //每张卡跟自己的调用绑定：这一条一出结果就收掉，跟结果行无缝接上
-                val rs = seqs[i]
-                try {
-                    if (!ctx.isActive) return
-                    //提问工具先接住：不弹工具确认框，直接把面板推给用户并等作答
-                    if (c.name == Tools.ASK) {
-                        status = host.getString(R.string.ag_ask_fmt, i + 1, calls.size)
-                        busySince = System.currentTimeMillis()
-                        val qa = runCatching { JSONObject(c.arguments) }.getOrElse { JSONObject() }
-                        appendToolMsg(c, askUser(qa), Route.SANDBOX, false)
-                        return
-                    }
-                    //分智能体：免确认，直接并行跑完把合并结果当一次工具输出回灌
-                    if (c.name == Tools.SUB) {
-                        val qa = runCatching { JSONObject(c.arguments) }.getOrElse { JSONObject() }
-                        val tasks = subTasks(qa)
-                        if (tasks.isEmpty()) {
-                            appendToolMsg(c, "没有可执行的子任务（tasks 为空）。", Route.SANDBOX, true)
-                            return
-                        }
-                        status = host.getString(R.string.ag_sub_start, tasks.size)
-                        busySince = System.currentTimeMillis()
-                        val tExec = System.currentTimeMillis()
-                        val text = inCtx {
-                            SubAgents.run(
-                                tasks, qa.optInt("rounds", SubAgents.DEFAULT_ROUNDS),
-                                onStatus = { s -> status = s },
-                                confirm = { n, a, id -> confirmFromSub(n, a, id) }
-                            )
-                        }
-                        status = host.getString(R.string.ag_think_again)
-                        busySince = System.currentTimeMillis()
-                        appendToolMsg(c, text, Route.SANDBOX, false, System.currentTimeMillis() - tExec)
-                        return
-                    }
-                    //工作流：按步骤顺序跑，每步一个分智能体，失败按每步策略重试或跳过
-                    if (c.name == Tools.FLOW_RUN) {
-                        val qa = runCatching { JSONObject(c.arguments) }.getOrElse { JSONObject() }
-                        val flow = flowOf(qa)
-                        if (flow == null) {
-                            appendToolMsg(c, "没有可执行的工作流：要么给 flow_id，要么给 name + steps。", Route.SANDBOX, true)
-                            return
-                        }
-                        status = "工作流「" + flow.name + "」开始，共 " + flow.steps.size + " 步"
-                        busySince = System.currentTimeMillis()
-                        val tExec = System.currentTimeMillis()
-                        val out = inCtx {
-                            FlowRunner.run(
-                                flow,
-                                onStatus = { s -> status = s },
-                                confirm = { n, a, id -> confirmFromSub(n, a, id) }
-                            )
-                        }
-                        if (flow.id.isNotBlank()) Flows.mark(flow.id, out.ok, out.text)
-                        status = host.getString(R.string.ag_think_again)
-                        busySince = System.currentTimeMillis()
-                        appendToolMsg(c, out.text, Route.SANDBOX, !out.ok, System.currentTimeMillis() - tExec)
-                        return
-                    }
-                    //当前模式禁掉的工具直接回绝：定义没下发，模型仍可能凭记忆硬调
-                    if (!Tools.allowed(c.name)) {
-                        appendToolMsg(
-                            c,
-                            "当前运行模式不允许调用「" + Tools.label(c.name) + "」，本次没有执行。",
-                            Route.SANDBOX,
-                            true
-                        )
-                        return
-                    }
-                    //缺系统权限时工具一律直接拒：不弹确认框，也别让模型反复试同一调用
-                    if (!Perms.ok(App.self)) {
-                        val lack = Perms.missing(App.self).joinToString("、") { Perms.label(it) }
-                        appendToolMsg(
-                            c,
-                            "缺少系统权限（$lack），已直接拒绝本次工具调用。请到系统设置 → 应用 → 权限里重新开启。",
-                            Route.SANDBOX,
-                            true
-                        )
-                        return
-                    }
-                    status = host.getString(R.string.ag_wait_fmt, Tools.label(c.name), i + 1, calls.size)
-                    busySince = System.currentTimeMillis()
-                    val allowed = decide(c)
-                    if (!allowed) {
-                        appendToolMsg(c, "用户拒绝执行该工具调用，未做任何改动。", Route.SANDBOX, true)
-                        return
-                    }
-                    status = host.getString(R.string.ag_run_fmt, Tools.label(c.name), i + 1, calls.size)
-                    busySince = System.currentTimeMillis()
-                    val args = runCatching { JSONObject(c.arguments) }.getOrElse { JSONObject() }
-                    //顶部胶囊：「正在执行 xx」，有无障碍走无障碍窗层，没有则靠悬浮窗权限。
-                    //screen start 之后胶囊已常驻，这里只改文案；quiet 那一次干脆别先亮。
-                    if (!quietCall(c.name, args)) {
-                        if (isFront()) b.ai.device.sys.host.Capsule.show(host.getString(R.string.ag_capsule_fmt, Tools.label(c.name)))
-                    }
-                    val tTool = System.currentTimeMillis()
-                    val out = try {
-                        inCtx { withContext(Dispatchers.IO) { Tools.execute(c.name, args) } }
-                    } finally {
-                        if (isFront()) b.ai.device.sys.host.Capsule.hide()
-                    }
-                    appendToolMsg(c, out.text, out.route, !out.ok, System.currentTimeMillis() - tTool)
-                } finally {
-                    endTool(rs)
-                }
-            } //单条调用
-            //相邻的独立调用合成一批并发跑；要交互或抢独占资源的仍串行，混排时按段处理
-            var ci = 0
-            val sem = Semaphore(PARALLEL_TOOLS)
-            while (ci < calls.size) {
-                if (serialOnly(calls[ci])) {
-                    one(ci)
-                    ci++
-                    continue
-                }
-                val batch = ArrayList<Int>()
-                while (ci < calls.size && !serialOnly(calls[ci])) {
-                    batch.add(ci)
-                    ci++
-                }
-                if (batch.size == 1) {
-                    one(batch[0])
-                    continue
-                }
-                try {
-                    //确认弹窗只有一份：先一条条把权限与确认过完，再并发执行
-                    val ready = ArrayList<Int>()
-                    for (i in batch) {
-                        val c = calls[i]
-                        if (!ctx.isActive) break
-                        //当前模式禁掉的工具直接回绝：定义没下发，模型仍可能凭记忆硬调
-                        if (!Tools.allowed(c.name)) {
-                            appendToolMsg(
-                                c,
-                                "当前运行模式不允许调用「" + Tools.label(c.name) + "」，本次没有执行。",
-                                Route.SANDBOX,
-                                true
-                            )
-                            continue
-                        }
-                        //缺系统权限时工具一律直接拒：不弹确认框，也别让模型反复试同一调用
-                        if (!Perms.ok(App.self)) {
-                            val lack = Perms.missing(App.self).joinToString("、") { Perms.label(it) }
-                            appendToolMsg(
-                                c,
-                                "缺少系统权限（$lack），已直接拒绝本次工具调用。请到系统设置 → 应用 → 权限里重新开启。",
-                                Route.SANDBOX,
-                                true
-                            )
-                            continue
-                        }
-                        status = host.getString(R.string.ag_wait_fmt, Tools.label(c.name), i + 1, calls.size)
-                        busySince = System.currentTimeMillis()
-                        if (!decide(c)) {
-                            appendToolMsg(c, "用户拒绝执行该工具调用，未做任何改动。", Route.SANDBOX, true)
-                            continue
-                        }
-                        ready.add(i)
-                    }
-                    if (ready.size == 1) {
-                        val o = execOne(calls[ready[0]])
-                        appendToolMsg(calls[ready[0]], o.text, o.route, !o.ok, o.ms)
-                    } else if (ready.size > 1) {
-                        status = host.getString(R.string.ag_par_fmt, ready.size)
-                        busySince = System.currentTimeMillis()
-                        //并发跑完再按原顺序落库：工具结果的顺序必须跟调用顺序一致
-                        val outs = coroutineScope {
-                            ready.map { i -> async { sem.withPermit { execOne(calls[i]) } } }.awaitAll()
-                        }
-                        ready.forEachIndexed { k, i ->
-                            appendToolMsg(calls[i], outs[k].text, outs[k].route, !outs[k].ok, outs[k].ms)
-                        }
-                    }
-                } finally {
-                    batch.forEach { endTool(seqs[it]) }
-                }
-            }
-            status = host.getString(R.string.ag_think_again)
-            busySince = System.currentTimeMillis()
-        }
-    } //模型 → 工具 → 回传 的主循环
+    }
+
+    /** 内核的催办消息（预算耗尽、连续失败）也走正常落库路径，模型下一轮才看得见 */
+    override suspend fun appendUser(text: String) {
+        append(ChatMsg(role = "user", content = text))
+    }
 
     /** 只许单独跑的工具：要弹问答/计划/子智能体/工作流，或独占屏幕、独占 proot 会话 */
     private fun serialOnly(c: ToolCall): Boolean =
         c.name == Tools.ASK || c.name == Tools.SUB || c.name == Tools.FLOW_RUN ||
             c.name == Tools.SCREEN || c.name == Tools.LINUX
-
-    /** 并行批里一条工具的结果：先收齐再按原顺序落库，顺序才不会和调用顺序错开 */
-    private data class ToolOut(val text: String, val route: Route, val ok: Boolean, val ms: Long)
-
-    /** 跑一条工具：异常收成结果文本，别让一个坏工具把整批带崩 */
-    private suspend fun execOne(c: ToolCall): ToolOut {
-        val args = runCatching { JSONObject(c.arguments) }.getOrElse { JSONObject() }
-        val t0 = System.currentTimeMillis()
-        val r = runCatching { inCtx { withContext(Dispatchers.IO) { Tools.execute(c.name, args) } } }
-        val ms = System.currentTimeMillis() - t0
-        val o = r.getOrNull()
-        return if (o != null) {
-            ToolOut(o.text, o.route, o.ok, ms)
-        } else {
-            val e = r.exceptionOrNull()
-            ToolOut(
-                "工具执行异常：" + (e?.message ?: e?.javaClass?.simpleName.orEmpty()),
-                Route.SANDBOX,
-                false,
-                ms
-            )
-        }
-    } //执行一条工具调用
 
     /** 工具参数 → 一条工作流：给了 flow_id 就取库里的，否则用 name + steps 现拼一条不存盘的 */
     private fun flowOf(args: JSONObject): Flow? {
@@ -1735,23 +1692,6 @@ object Agent {
             }
         }
     } //弹窗展示用的实际权限路径
-
-    private fun parseCalls(msg: JSONObject): List<ToolCall> {
-        val arr = msg.optJSONArray("tool_calls") ?: return emptyList()
-        val out = ArrayList<ToolCall>()
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val f = o.optJSONObject("function") ?: continue
-            out.add(
-                ToolCall(
-                    id = o.optString("id"),
-                    name = f.optString("name"),
-                    arguments = f.optString("arguments", "{}")
-                )
-            )
-        }
-        return out
-    } //解析 tool_calls
 
     private fun systemPrompt(): String {
         val flow = Workflows.prompt(Cfg.workflow)
@@ -2013,7 +1953,8 @@ object Agent {
         val m = sumLlm()
         val resp = runCatching {
             withContext(Dispatchers.IO) {
-                LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4]).chat(m[3], pay)
+                LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4])
+                    .chat(m[3], pay, opts = Cfg.opts(m[2], m[0]))
             }
         }.getOrNull() ?: return false
         val text = resp.text("content").trim()
@@ -2134,7 +2075,8 @@ object Agent {
         val m = sumLlm()
         val resp = runCatching {
             withContext(Dispatchers.IO) {
-                LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4]).chat(m[3], pay)
+                LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4])
+                    .chat(m[3], pay, opts = Cfg.opts(m[2], m[0]))
             }
         }.getOrNull() ?: return false
         val text = resp.text("content").trim()

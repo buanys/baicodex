@@ -351,7 +351,7 @@ private fun testChat(): String = runCatching {
     val m = LlmClient(Cfg.baseUrl, key, Providers.byId(Cfg.providerId).auth, protocol = Cfg.modelProtocol)
     val msgs = JSONArray().put(JSONObject().put("role", "user").put("content", "ping，只回 ok 两个字符"))
     val t0 = SystemClock.elapsedRealtime()
-    val msg = m.chat(Cfg.model, msgs, think = Cfg.think, thinkEffort = Cfg.thinkEffort)
+    val msg = m.chat(Cfg.model, msgs, think = Cfg.think, thinkEffort = Cfg.thinkEffort, opts = Cfg.opts())
     val cost = SystemClock.elapsedRealtime() - t0
     val body = msg.optString("content").ifBlank { msg.toString() }
     b.ai.App.self.getString(R.string.tx_c3af4af2, Cfg.model, cost, body.take(200))
@@ -385,7 +385,7 @@ private fun protocolDump(): String = runCatching {
     val msg = LlmClient(
         Cfg.baseUrl, Cfg.apiKey, Providers.byId(Cfg.providerId).auth,
         protocol = Cfg.modelProtocol
-    ).chat(Cfg.model, msgs, think = false, tools = JSONArray())
+    ).chat(Cfg.model, msgs, think = false, tools = JSONArray(), opts = Cfg.opts())
     val cost = SystemClock.elapsedRealtime() - t0
     val body = msg.optString("content")
     sb.append("实测：").append(cost).append("ms ").append(body.take(80).ifBlank { "(空)" })

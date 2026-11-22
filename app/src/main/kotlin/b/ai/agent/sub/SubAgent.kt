@@ -25,6 +25,7 @@ import b.ai.net.api.llm.LlmClient
 import b.ai.net.api.llm.text
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -62,6 +63,10 @@ object SubAgents {
         "你是一个分智能体，只负责完成交给你的一个子任务，不要寒暄、不要反问用户。" +
             "工具权限与主智能体一致：读文件、写文件、执行命令都能用，但需要确认的调用会弹窗，" +
             "用户拒绝就换个做法，别反复试同一个调用。\n" +
+            "硬约束：\n" +
+            "1. 不要先说打算做什么——直接调用工具去做。只说「我先看一下」「我会执行」等于没做。\n" +
+            "2. 结论必须有依据：文件路径 + 关键片段，或命令 + 实际输出。没看到的不许写。\n" +
+            "3. 做不到就明说做不到，不许编；同一个调用失败两次就换做法。\n" +
             "做完后用中文给结论：结论在前，依据（文件路径 + 关键片段 / 链接 + 要点）在后，控制在一千字内。"
 
     /** 分智能体不能碰的工具：嵌套派活、向用户提问（会卡住并行）、屏幕胶囊（全局单例会互抢） */
@@ -135,16 +140,33 @@ object SubAgents {
             )
         var last = ""
         var round = 0
+        var nudges = 0
+        val seen = HashMap<String, Int>()
         try {
             while (currentCoroutineContext().isActive && round < rounds) {
-                round++
                 val resp = ask(msgs, defs)
                 val content = resp.text("content")
                 if (content.isNotBlank()) last = content
                 val calls = toolCalls(resp)
+                //零调用：可能是真答完了，也可能只是「我先看一下」就停手。
+                //后者是子智能体最常见的翻车方式，回灌一句硬约束逼它真动手——只补一次，别在这里空转。
                 if (calls.length() == 0) {
+                    if (round == 0 && nudges < 1 && content.trim().length < 300) {
+                        nudges++
+                        msgs.put(JSONObject().put("role", "assistant").put("content", content))
+                        msgs.put(
+                            JSONObject().put("role", "user").put(
+                                "content",
+                                "你只说了打算做什么，任务还没做。现在立刻调用工具去做；" +
+                                    "如果确实不需要工具，就直接给出带依据的结论，不要再复述意图。"
+                            )
+                        )
+                        continue
+                    }
                     return SubOut(t.title, true, content.ifBlank { last }, round, t.priority)
                 }
+                //轮次只算真动手的那些
+                round++
                 //工具调用原样回填，再逐个执行
                 msgs.put(
                     JSONObject().put("role", "assistant").put("content", content).put("tool_calls", calls)
@@ -154,11 +176,36 @@ object SubAgents {
                     val fn = c.optJSONObject("function") ?: JSONObject()
                     val name = fn.text("name")
                     val id = c.text("id")
-                    val args = runCatching { JSONObject(fn.text("arguments").ifBlank { "{}" }) }
-                        .getOrElse { JSONObject() }
+                    val raw = fn.text("arguments").ifBlank { "{}" }
+                    //同名同参的重复调用：第二次拦下不执行，第三次直接中止这个子任务。
+                    //模型的常见退化是同一调用反复刷，没人拦就会把轮次烧光。
+                    val sig = name + "\u0000" + raw
+                    val n = (seen[sig] ?: 0) + 1
+                    seen[sig] = n
+                    if (n >= 4) {
+                        //刷到第四次就别陪着转了：结论带走，标记失败，回给主智能体
+                        return SubOut(
+                            t.title, false,
+                            last.ifBlank { "（同一个调用重复四次，已中止）" },
+                            round, t.priority
+                        )
+                    }
+                    val out = when (n) {
+                        //第二次仍执行：改完文件再读一遍是正常操作，只提醒一句
+                        2 -> {
+                            val args = runCatching { JSONObject(raw) }.getOrElse { JSONObject() }
+                            "（同一个调用这是第二次，结果没变就别再试）\n" +
+                                exec(name, args, id, confirm).take(12_000)
+                        }
+                        //第三次拦下不执行，逼它换做法
+                        3 -> "（重复调用已拦截：同样的调用已经执行过两次。换个做法，或者用已有结果给结论。）"
+                        else -> {
+                            val args = runCatching { JSONObject(raw) }.getOrElse { JSONObject() }
+                            exec(name, args, id, confirm).take(12_000)
+                        }
+                    }
                     msgs.put(
-                        JSONObject().put("role", "tool").put("tool_call_id", id)
-                            .put("content", exec(name, args, id, confirm).take(12_000))
+                        JSONObject().put("role", "tool").put("tool_call_id", id).put("content", out)
                     )
                 }
             }
@@ -214,13 +261,25 @@ object SubAgents {
             Providers.byId(b?.providerId ?: Cfg.providerId).auth,
             protocol = b?.protocol ?: Cfg.modelProtocol
         )
+        val model = b?.model ?: Cfg.model
+        val temp = b?.temperature?.takeIf { it >= 0f }?.toDouble()
+            ?: Cfg.temperature.takeIf { it >= 0f }?.toDouble()
+        val effort = b?.thinkEffort ?: Cfg.thinkEffort
+        val extra = b?.extraParams ?: Cfg.extraParams
+        //子任务跟主通道同一个冻结后端：厂商与地址按它算，能力位仍走全局开关
+        val opts = Cfg.opts(b?.providerId ?: Cfg.providerId, b?.baseUrl ?: Cfg.baseUrl)
+        val job = currentCoroutineContext()[Job]
         return withContext(Dispatchers.IO) {
-            client.chat(
-                b?.model ?: Cfg.model, msgs,
-                b?.temperature?.takeIf { it >= 0f }?.toDouble()
-                    ?: Cfg.temperature.takeIf { it >= 0f }?.toDouble(),
-                false, b?.thinkEffort ?: Cfg.thinkEffort, b?.extraParams ?: Cfg.extraParams, defs
-            )
+            //流式优先：非流式是整包等，网关空闲超时一到就 524。
+            //拿不到流（端点不支持 SSE）再退回整包，这条兜底和主循环一致。
+            val streamed = runCatching {
+                client.chatStream(
+                    model, msgs, temp, false, effort, extra, defs, opts,
+                    shouldStop = { job?.isActive != true },
+                    onDelta = { _, _ -> }
+                )
+            }.getOrNull()
+            streamed ?: client.chat(model, msgs, temp, false, effort, extra, defs, opts)
         }
     } //一次请求
 

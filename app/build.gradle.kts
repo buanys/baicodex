@@ -169,6 +169,8 @@ dependencies {
     implementation(libs.shizuku.provider)
     implementation(libs.kyant.backdrop)
     implementation(libs.pangu.stringfog)
+    testImplementation(libs.junit)
+    testImplementation(libs.org.json)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 }
