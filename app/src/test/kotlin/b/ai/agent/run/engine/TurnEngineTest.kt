@@ -191,7 +191,7 @@ class TurnEngineTest {
     @Test
     fun `步数预算跑满就收口，不再无限调工具`() = runBlocking {
         val replies = mutableListOf<Any>()
-        repeat(50) { replies.add(replyWithCallAt(it)) }
+        repeat(40) { replies.add(replyWithCallAt(it)) }
         replies.add(replyText("收口了"))
         val host = FakeHost(replies)
         TurnEngine(host).run()
