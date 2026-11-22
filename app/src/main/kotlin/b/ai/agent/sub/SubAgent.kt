@@ -220,11 +220,10 @@ object SubAgents {
                 b?.temperature?.takeIf { it >= 0f }?.toDouble()
                     ?: Cfg.temperature.takeIf { it >= 0f }?.toDouble(),
                 false, b?.thinkEffort ?: Cfg.thinkEffort, b?.extraParams ?: Cfg.extraParams, defs,
-                //子任务跟主通道同一个冻结后端：能力开关也按它算，别回头读全局
+                //子任务跟主通道同一个冻结后端：厂商与地址按它算，能力位仍走全局开关
                 Cfg.opts(
                     b?.providerId ?: Cfg.providerId,
-                    b?.baseUrl ?: Cfg.baseUrl,
-                    b?.toolCall ?: Cfg.modelToolCall
+                    b?.baseUrl ?: Cfg.baseUrl
                 )
             )
         }
