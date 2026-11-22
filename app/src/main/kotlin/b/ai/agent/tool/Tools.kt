@@ -2126,28 +2126,28 @@ object Tools {
         return FileOps.zip(paths, out).toOutcome()
     } //压缩解压
 
-    /** 剪贴板：get 读、set 写，失败统一以「失败」开头由调用方判 ok */
+    /** 剪贴板：get 读、set 写，成败由 Device 那边给 */
     private fun clip(a: JSONObject): ToolOutcome {
         val act = a.optString("action", "get").lowercase()
-        val t = if (act == "set") b.ai.device.sys.probe.Device.clipSet(a.optString("text"))
+        val r = if (act == "set") b.ai.device.sys.probe.Device.clipSet(a.optString("text"))
         else b.ai.device.sys.probe.Device.clipGet()
-        return ToolOutcome(!t.startsWith("失败"), t, Route.SANDBOX)
+        return ToolOutcome(r.ok, r.text, Route.SANDBOX)
     } //剪贴板
 
     /** 打开链接 / 分享：url 走浏览器，share 走系统分享面板 */
     private fun openLink(a: JSONObject): ToolOutcome {
         val act = a.optString("action", "url").lowercase()
-        val t = if (act == "share") b.ai.device.sys.probe.Device.shareText(a.optString("text"))
+        val r = if (act == "share") b.ai.device.sys.probe.Device.shareText(a.optString("text"))
         else b.ai.device.sys.probe.Device.openUrl(a.optString("url"))
-        return ToolOutcome(!t.startsWith("失败"), t, Route.SANDBOX)
+        return ToolOutcome(r.ok, r.text, Route.SANDBOX)
     } //打开或分享
 
     /** 通知：list 读今日通知（可按应用筛），send 发一条本地通知给用户 */
     private fun noti(a: JSONObject): ToolOutcome {
         val act = a.optString("action", "list").lowercase()
         if (act == "send") {
-            val t = b.ai.device.sys.probe.Device.sendNoti(a.optString("title"), a.optString("text"))
-            return ToolOutcome(!t.startsWith("失败"), t, Route.SANDBOX)
+            val r = b.ai.device.sys.probe.Device.sendNoti(a.optString("title"), a.optString("text"))
+            return ToolOutcome(r.ok, r.text, Route.SANDBOX)
         }
         return ToolOutcome(true, b.ai.device.sys.probe.Device.notiList(a.optInt("limit", 30), a.optString("app")), Route.SANDBOX)
     } //通知
@@ -2161,7 +2161,7 @@ object Tools {
         val count = a.optInt("count", 3).coerceIn(1, 10)
         val ms = a.optInt("timeout", 3000).coerceIn(500, 30_000)
         val r = Net.ping(host, port, count, ms)
-        return ToolOutcome(!r.startsWith("失败"), r, Route.SANDBOX)
+        return ToolOutcome(!Net.failed(r), r, Route.SANDBOX)
     } //测延迟
     /** net_curl：任意方法 + 自定义头，回状态码、原始响应头与正文 */
     private fun netCurl(a: JSONObject): ToolOutcome {
@@ -2181,7 +2181,7 @@ object Tools {
         val ms = a.optInt("timeout", 15_000).coerceIn(1_000, 120_000)
         val max = a.optInt("max", 20_000).coerceIn(200, 200_000)
         val r = Net.page(url, ms, max)
-        return ToolOutcome(!r.startsWith("失败"), r, Route.SANDBOX)
+        return ToolOutcome(!Net.failed(r), r, Route.SANDBOX)
     } //抓正文
 
     private fun httpFetch(a: JSONObject): ToolOutcome {
@@ -2251,7 +2251,7 @@ object Tools {
             a.optString("action", "open"), a.optString("url"), a.optString("text"),
             a.optString("target"), a.optString("script"), a.optInt("limit", 4000)
         )
-        return ToolOutcome(!t.startsWith("失败"), t, Route.SANDBOX)
+        return ToolOutcome(!b.ai.device.web.Browser.failed(t), t, Route.SANDBOX)
     } //浏览网页
 
     private fun execShell(command: String, path: String = "", session: String = "", keys: String = ""): ToolOutcome {
@@ -2553,9 +2553,8 @@ object Tools {
             if (id != "netease") {
                 return ToolOutcome(true, "$name：凭据已存（这家还没接账号校验）", Route.SANDBOX)
             }
-            val r = NeteaseLogin.me()
-            val ok = !r.startsWith("未登录") && !r.startsWith("网络")
-            return ToolOutcome(ok, "$name：$r", Route.SANDBOX)
+            val r = NeteaseLogin.meOut()
+            return ToolOutcome(r.ok, "$name：${r.text}", Route.SANDBOX)
         }
         if (act == "clear") {
             MusicCfg.clearCookie(id)

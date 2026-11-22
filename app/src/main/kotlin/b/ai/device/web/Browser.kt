@@ -138,6 +138,9 @@ object Browser {
         return info
     } //标题与地址
 
+    /** 失败文案约定：本文件所有失败都以「失败：」开头，判定只在这里 */
+    fun failed(text: String): Boolean = text.startsWith("失败：")
+
     fun run(action: String, url: String, text: String, target: String, script: String, limit: Int): String {
         val act = action.trim().lowercase().ifEmpty { "open" }
         if (act == "open" || act == "go") {

@@ -17,6 +17,7 @@ package b.ai.net.music
 import android.util.Base64
 import android.util.Log
 import b.ai.core.cfg.seed.Seeds
+import b.ai.core.misc.Res
 import b.ai.core.media.music.MusicCfg
 import b.ai.native.security.MiCrypto
 import org.json.JSONObject
@@ -160,13 +161,17 @@ object NeteaseLogin {
         else -> msg.ifBlank { "登录失败（$code）" }
     } //错误码翻成人话
 
-    fun me(): String {
-        val j = weapi("/weapi/nuser/account/get") ?: return "网络异常，稍后再试"
-        val p = j.optJSONObject("profile") ?: return "未登录（cookie 无效或已过期）"
+    fun me(): String = meOut().text
+
+    /** 当前登录账号：成败由这里判定（UI 只取 text，工具层拿 ok） */
+    fun meOut(): Res {
+        val j = weapi("/weapi/nuser/account/get") ?: return Res.fail("网络异常，稍后再试")
+        val p = j.optJSONObject("profile")
+            ?: return Res.fail("未登录（cookie 无效或已过期）")
         val uid = p.optLong("userId")
-        if (uid <= 0L) return "未登录（cookie 无效或已过期）"
+        if (uid <= 0L) return Res.fail("未登录（cookie 无效或已过期）")
         val nick = p.optString("nickname").ifBlank { "网易云用户" }
-        return nick
+        return Res.ok(nick)
     } //当前登录账号的昵称，失败时返回给人看的原因
 
     fun sendCaptcha(phone: String, area: String = "86"): String {

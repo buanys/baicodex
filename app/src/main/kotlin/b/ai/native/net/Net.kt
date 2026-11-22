@@ -19,6 +19,9 @@ import java.net.URL
 
 /** C 层 HTTPS 客户端：图标这类小请求直接走 native，不再走 JVM 的 HttpURLConnection */
 object Net {
+
+    /** 原生网络调用的失败文案约定：一律以「失败：」开头。判定只在这里 */
+    fun failed(text: String): Boolean = text.startsWith("失败：")
     private val loaded: Boolean by lazy { runCatching { System.loadLibrary("baicodex") }.isSuccess }
 
     private external fun nativeGet(url: String, timeoutMs: Int): ByteArray?

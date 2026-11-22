@@ -28,6 +28,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import b.ai.App
+import b.ai.core.misc.Res
 import b.ai.core.task.hook.Noti
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -53,54 +54,56 @@ object Device {
         return out
     } //主线程取值
 
-    fun clipGet(): String = main {
+    fun clipGet(): Res = main {
         val cm = App.self.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val d = cm.primaryClip
-        if (d == null || d.itemCount == 0) return@main "剪贴板是空的"
+        if (d == null || d.itemCount == 0) return@main Res.ok("剪贴板是空的")
         val sb = StringBuilder()
         for (i in 0 until d.itemCount) {
             val t = d.getItemAt(i).coerceToText(App.self)?.toString().orEmpty()
             if (t.isNotEmpty()) sb.append(t).append('\n')
         }
         val text = sb.toString().trimEnd()
-        if (text.isEmpty()) "剪贴板里没有可读文本（可能是图片或文件）"
-        else if (text.length > CAP) text.take(CAP) + "\n…已截断（原长 ${text.length} 字符）"
-        else text
+        when {
+            text.isEmpty() -> Res.ok("剪贴板里没有可读文本（可能是图片或文件）")
+            text.length > CAP -> Res.ok(text.take(CAP) + "\n…已截断（原长 ${text.length} 字符）")
+            else -> Res.ok(text)
+        }
     } //读剪贴板
 
-    fun clipSet(text: String): String = main {
-        if (text.isEmpty()) return@main "失败：要写入的文字为空"
+    fun clipSet(text: String): Res = main {
+        if (text.isEmpty()) return@main Res.fail("要写入的文字为空")
         val cm = App.self.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("BaiAgent", text))
-        "已复制到剪贴板（${text.length} 字符）"
+        Res.ok("已复制到剪贴板（${text.length} 字符）")
     } //写剪贴板
 
-    fun openUrl(url: String): String = main {
+    fun openUrl(url: String): Res = main {
         val u = url.trim()
-        if (u.isEmpty()) return@main "失败：url 为空"
+        if (u.isEmpty()) return@main Res.fail("url 为空")
         val uri = if (u.contains("://")) Uri.parse(u) else Uri.parse("https://$u")
         val i = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { App.self.startActivity(i) }.getOrElse {
             //没有浏览器可接就退回复制链接
             val cm = App.self.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("BaiAgent", u))
-            return@main "没找到能打开链接的应用，已把链接复制到剪贴板：$u"
+            return@main Res.ok("没找到能打开链接的应用，已把链接复制到剪贴板：$u")
         }
-        "已打开 $u"
+        Res.ok("已打开 $u")
     } //打开链接
 
-    fun shareText(text: String): String = main {
-        if (text.isBlank()) return@main "失败：要分享的内容为空"
+    fun shareText(text: String): Res = main {
+        if (text.isBlank()) return@main Res.fail("要分享的内容为空")
         val send = Intent(Intent.ACTION_SEND).setType("text/plain")
             .putExtra(Intent.EXTRA_TEXT, text)
         val i = Intent.createChooser(send, "分享到").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { App.self.startActivity(i) }.getOrElse {
-            return@main "拉起分享面板失败：${it.message}"
+            return@main Res.fail("拉起分享面板失败：${it.message}")
         }
-        "已拉起分享面板"
+        Res.ok("已拉起分享面板")
     } //分享文本
 
-    fun sendNoti(title: String, text: String): String = main {
+    fun sendNoti(title: String, text: String): Res = main {
         val t = title.trim().ifEmpty { "BaiAgent" }
         val nm = App.self.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -119,8 +122,8 @@ object Device {
             .setAutoCancel(true)
         runCatching {
             nm.notify(System.currentTimeMillis().toInt(), builder.build())
-        }.getOrElse { return@main "发通知失败（可能没给通知权限）：${it.message}" }
-        "已发通知：$t"
+        }.getOrElse { return@main Res.fail("发通知失败（可能没给通知权限）：${it.message}") }
+        Res.ok("已发通知：$t")
     } //发本地通知
 
     /** 今日通知清单：按应用筛，时间倒序，最多 limit 条 */
