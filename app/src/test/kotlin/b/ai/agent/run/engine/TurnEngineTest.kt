@@ -190,7 +190,8 @@ class TurnEngineTest {
 
     @Test
     fun `步数预算跑满就收口，不再无限调工具`() = runBlocking {
-        val replies = MutableList(50) { replyWithCallAt(it) }
+        val replies = mutableListOf<Any>()
+        repeat(50) { replies.add(replyWithCallAt(it)) }
         replies.add(replyText("收口了"))
         val host = FakeHost(replies)
         TurnEngine(host).run()
@@ -204,7 +205,8 @@ class TurnEngineTest {
 
     @Test
     fun `同一个调用刷到第四次就不再执行，第八次直接停`() = runBlocking {
-        val replies = MutableList(10) { replyWithCall() }
+        val replies = mutableListOf<Any>()
+        repeat(10) { replies.add(replyWithCall()) }
         replies.add(replyText("收口了"))
         var executed = 0
         val host = FakeHost(replies, exec = { executed++; ToolOut("echo", Route.SANDBOX, true, 1L) })
@@ -218,7 +220,8 @@ class TurnEngineTest {
 
     @Test
     fun `连续十次工具失败就收口`() = runBlocking {
-        val replies = MutableList(20) { replyWithCallAt(it) }
+        val replies = mutableListOf<Any>()
+        repeat(20) { replies.add(replyWithCallAt(it)) }
         replies.add(replyText("我失败了"))
         val host = FakeHost(replies, exec = { ToolOut("boom", Route.SANDBOX, false, 1L) })
         TurnEngine(host).run()
