@@ -70,6 +70,40 @@ git checkout main && git cherry-pick <sha>
 - **bz2 解压需要 bzip2 源码**：`CMakeLists.txt` 里新增了 `_third_party/bzip2` 静态库，
   CI 的 "Fetch third-party sources" 步骤已跟着加了 `BZIP2_SHA` 钉版本拉取。
 
+## agent 层结构改造（不在上游）
+
+上游把编排、上下文、压缩、权限、通知全塞在 `Agent.kt`（2249 行）和 `Tools.kt`（2545 行）里，
+零测试。这一轮把循环内核抽出来并补上护栏，动手前先读 `~/baicodex-agent-layer.md`（评估）
+和 `~/scream-to-baicodex.md`（对照与移植清单）。
+
+| 文件 | 改了什么 |
+|---|---|
+| `agent/run/engine/TurnEngine.kt` | 循环内核：步循环、Key 轮换、工具批串行/并发、结果按序回灌，以及护栏 |
+| `agent/run/engine/TurnHost.kt` | 内核向宿主要的全部能力，副作用一律留在 `Run` 里 |
+| `agent/run/engine/TurnTypes.kt` | `ToolOut` / `Gate` / `AfterAnswer` / `Stage` |
+| `Agent.kt` 的 `Run` | 实现 `TurnHost`；`runLoop` 只剩一行 `engine.run()` |
+| `net/api/llm/LlmOpts.kt` | 一次请求的全部策略；`Cfg.opts(...)` 按本轮后端快照算好 |
+| `LlmClient` | 不再回读 `Cfg`，也不再回退到 `Tools.definitions()`；`tools = null` 就是不给工具 |
+| `app/src/test/.../TurnEngineTest.kt` | 9 条 JVM 单测，钉住收敛、拒绝、失败、Key 轮换、护栏 |
+| `.github/workflows/build-apk.yml` | 加 `Unit tests` 步骤，跑在打包之前，红即停 |
+| `agent/sub/SubAgent.kt` | SYS 硬约束、首轮零调用催办、重复调用 2/3/4、请求改走流式 |
+
+护栏取值（来源 `~/scream-src/packages/agent-core/src/agent/turn/defaults.ts`，按手机端收窄）：
+
+| 值 | 含义 |
+|---|---|
+| 40 | 单个用户消息内的工具轮数上限，跑满收口 |
+| 6 / 10 | 连续工具失败：提醒换做法 / 强制收口 |
+| 8 | 连续被用户拒绝：收口 |
+| 3 / 5 / 8 | 同名同参重复调用：提醒 / 警告 / 强制停 |
+
+本机跑单测（CI 之外）：
+
+```
+ANDROID_HOME=~/android-sdk ~/.gradle/wrapper/dists/gradle-9.2.1-bin/*/gradle-9.2.1/bin/gradle \
+  :app:testDebugUnitTest -Pbai.abis=arm64-v8a
+```
+
 ## 每次改动之后
 
 1. 推上去，等 CI 绿（约 5 分钟）。
