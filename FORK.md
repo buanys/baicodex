@@ -43,7 +43,19 @@ git checkout main && git cherry-pick <sha>
 | `signing/baicodex-ci.jks` | 固定签名密钥 | 签名不变才能覆盖安装，不用每次卸载 |
 | `.gitignore` | 放行上面那个 keystore | — |
 
-除此之外与上游一致，`ui/` 目录零改动。
+agent 层的结构改造（详见下方「agent 层结构改造」一节）：
+
+| 文件 | 改了什么 |
+|---|---|
+| `agent/run/engine/TurnEngine.kt` | 循环内核：步循环、Key 轮换、工具批串行/并发、结果按序回灌，以及护栏 |
+| `agent/run/engine/TurnHost.kt` | 内核向宿主要的全部能力，副作用留在 `Run` |
+| `agent/tool/Tools.kt` | 只剩注册与路由：常量、模式过滤、参数校验、dispatch（553 行） |
+| `agent/tool/ToolSpecs.kt` | 下发给模型的全部工具定义（964 行） |
+| `agent/tool/{Mi,Music,Shell,Net,Flow,Collab,Skill,Search,Device,File,Ssh}Tools.kt` | 工具实现按域拆成 11 个文件 |
+| `core/misc/Res.kt` | 带成败的结果类型：成败由产出层判定，不再从中文文案猜 |
+| `app/src/test/.../TurnEngineTest.kt` | 9 条 JVM 单测 |
+
+`ui/` 目录零改动。
 
 ## 签名
 
@@ -105,6 +117,22 @@ ANDROID_HOME=~/android-sdk ~/.gradle/wrapper/dists/gradle-9.2.1-bin/*/gradle-9.2
 ```
 
 ## 每次改动之后
+
+本机编译回路（CI 之外更快）：
+
+```
+# 前提：local.properties 已指向本机 SDK；~/gradle-9.0.0 是从腾讯镜像解出来的 Gradle 9.0.0
+#（services.gradle.org 在这边下载不动）；--init-script 把 Maven 全部换到阿里云（必须「清空再填」，
+# 只追加的话 Gradle 还是会先试 dl.google.com 然后超时）
+cd ~/baicodex
+ANDROID_HOME=~/android-sdk ~/gradle-9.0.0/bin/gradle \
+  --init-script ~/.baicodex-mirror.gradle \
+  :app:compileDebugKotlin -Pbai.abis=arm64-v8a   # 增量约 2-8 秒
+ANDROID_HOME=~/android-sdk ~/gradle-9.0.0/bin/gradle \
+  --init-script ~/.baicodex-mirror.gradle \
+  :app:testDebugUnitTest -Pbai.abis=arm64-v8a    # 单测，几秒
+# 编 APK 还是要 CI：NDK 是 x86_64 的，本机是 aarch64，native 编不了
+```
 
 1. 推上去，等 CI 绿（约 5 分钟）。
 2. 下载 APK，**覆盖安装**（不要卸载）。
