@@ -39,7 +39,7 @@ jobs:
       QUICKJS_SHA: 'e585640ffa2cf88ce7c2d587583c6fe15928ec2f'
       OPENSSL_SHA: 'b71f1470962019bd89534a2919f5925f93bc5779'
       LLAMA_SHA: '6f311d7ad63dce97a3ad1deaafb7cc044bb8c26c'
-      BZIP2_SHA: '1ea1ac188ad4b9cb662e3f8314673c63df95a589'
+      BZIP2_SHA: '6a8690fc8d26c815e798c588f796eabe9d684cf0'
 
     steps:
       - name: Checkout
@@ -129,6 +129,8 @@ jobs:
           fetch https://github.com/KDAB/android_openssl  "$TP/android_openssl-master" "$OPENSSL_SHA"
           fetch https://github.com/ggml-org/llama.cpp    "$TP/llama.cpp"              "$LLAMA_SHA"
           # 1.20 起解压 bz2 需要 bzip2 静态库（tarbz2.cpp），上游同样走 _third_party
+          # 钉 tag bzip2-1.0.8：master 的 bzlib.c 会 include bz_version.h（CMake configure 时才生成），
+          # 我们直接编 .c 文件，用 1.0.8 就不用另外造这个头
           fetch https://github.com/libarchive/bzip2      "$TP/bzip2"                  "$BZIP2_SHA"
           # OpenCL 头文件与 stub 不拉：CMake 检测不到就自动退回纯 CPU
           printf '%s\n' '--- quickjs 必需源文件 ---'
