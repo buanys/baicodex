@@ -42,22 +42,30 @@ object Device {
     private const val CAP = 20_000
 
     /** 主线程执行并等结果：剪贴板与通知都被主线程绑定，IO 线程直接调用会偶发 RemoteException */
-    private fun main(ms: Long = 5_000, block: () -> String): String {
+    private fun main(ms: Long = 5_000, block: () -> String): String =
+        mainOf(ms, { "失败：$it" }, block)
+
+    /** 同上，但返回带成败的结果：超时与异常都收成失败，不把类型问题留给调用方 */
+    private fun mainRes(ms: Long = 5_000, block: () -> Res): Res =
+        mainOf(ms, { Res.fail("失败：$it") }, block)
+
+    private fun <T> mainOf(ms: Long, fail: (String) -> T, block: () -> T): T {
         val h = Handler(Looper.getMainLooper())
         val latch = CountDownLatch(1)
-        var out = ""
+        var out: T? = null
         h.post {
-            out = runCatching(block).getOrElse { "失败：" + (it.message ?: it.javaClass.simpleName) }
+            out = runCatching(block).getOrElse { fail(it.message ?: it.javaClass.simpleName) }
             latch.countDown()
         }
-        if (!latch.await(ms, TimeUnit.MILLISECONDS)) return "失败：主线程执行超时"
-        return out
+        if (!latch.await(ms, TimeUnit.MILLISECONDS)) return fail("主线程执行超时")
+        @Suppress("UNCHECKED_CAST")
+        return out as T
     } //主线程取值
 
-    fun clipGet(): Res = main {
+    fun clipGet(): Res = mainRes {
         val cm = App.self.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val d = cm.primaryClip
-        if (d == null || d.itemCount == 0) return@main Res.ok("剪贴板是空的")
+        if (d == null || d.itemCount == 0) return@mainRes Res.ok("剪贴板是空的")
         val sb = StringBuilder()
         for (i in 0 until d.itemCount) {
             val t = d.getItemAt(i).coerceToText(App.self)?.toString().orEmpty()
@@ -71,39 +79,39 @@ object Device {
         }
     } //读剪贴板
 
-    fun clipSet(text: String): Res = main {
-        if (text.isEmpty()) return@main Res.fail("要写入的文字为空")
+    fun clipSet(text: String): Res = mainRes {
+        if (text.isEmpty()) return@mainRes Res.fail("要写入的文字为空")
         val cm = App.self.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("BaiAgent", text))
         Res.ok("已复制到剪贴板（${text.length} 字符）")
     } //写剪贴板
 
-    fun openUrl(url: String): Res = main {
+    fun openUrl(url: String): Res = mainRes {
         val u = url.trim()
-        if (u.isEmpty()) return@main Res.fail("url 为空")
+        if (u.isEmpty()) return@mainRes Res.fail("url 为空")
         val uri = if (u.contains("://")) Uri.parse(u) else Uri.parse("https://$u")
         val i = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { App.self.startActivity(i) }.getOrElse {
             //没有浏览器可接就退回复制链接
             val cm = App.self.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("BaiAgent", u))
-            return@main Res.ok("没找到能打开链接的应用，已把链接复制到剪贴板：$u")
+            return@mainRes Res.ok("没找到能打开链接的应用，已把链接复制到剪贴板：$u")
         }
         Res.ok("已打开 $u")
     } //打开链接
 
-    fun shareText(text: String): Res = main {
-        if (text.isBlank()) return@main Res.fail("要分享的内容为空")
+    fun shareText(text: String): Res = mainRes {
+        if (text.isBlank()) return@mainRes Res.fail("要分享的内容为空")
         val send = Intent(Intent.ACTION_SEND).setType("text/plain")
             .putExtra(Intent.EXTRA_TEXT, text)
         val i = Intent.createChooser(send, "分享到").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { App.self.startActivity(i) }.getOrElse {
-            return@main Res.fail("拉起分享面板失败：${it.message}")
+            return@mainRes Res.fail("拉起分享面板失败：${it.message}")
         }
         Res.ok("已拉起分享面板")
     } //分享文本
 
-    fun sendNoti(title: String, text: String): Res = main {
+    fun sendNoti(title: String, text: String): Res = mainRes {
         val t = title.trim().ifEmpty { "BaiAgent" }
         val nm = App.self.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -122,7 +130,7 @@ object Device {
             .setAutoCancel(true)
         runCatching {
             nm.notify(System.currentTimeMillis().toInt(), builder.build())
-        }.getOrElse { return@main Res.fail("发通知失败（可能没给通知权限）：${it.message}") }
+        }.getOrElse { return@mainRes Res.fail("发通知失败（可能没给通知权限）：${it.message}") }
         Res.ok("已发通知：$t")
     } //发本地通知
 
