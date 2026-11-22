@@ -58,7 +58,7 @@ object Sum {
         }
         val msg = runCatching {
             LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4])
-                .chat(m[3], pay, temperature = 0.2, tools = JSONArray())
+                .chat(m[3], pay, temperature = 0.2, tools = JSONArray(), opts = Cfg.opts(m[2], m[0]))
         }.getOrNull() ?: return null
         return msg.optString("content").trim().ifBlank { null }
     } //跑一次总结

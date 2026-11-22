@@ -520,7 +520,7 @@ object Agent {
                 //标题生成走「功能模型」里配的那条；没配就跟随当前聊天
                 val m = b.ai.core.model.chat.FnModel.conn(b.ai.core.model.chat.FnModel.TITLE)
                 LlmClient(m[0], m[1], b.ai.core.model.chat.FnModel.auth(b.ai.core.model.chat.FnModel.TITLE), protocol = m[4])
-                    .chat(m[3], pay, temperature = 0.3)
+                    .chat(m[3], pay, temperature = 0.3, opts = Cfg.opts(m[2], m[0]))
             }
         }.getOrNull() ?: return
         val line = resp.text("content").lines().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
@@ -1226,13 +1226,17 @@ object Agent {
             onDelta(t, r)
         }
         return withContext(Dispatchers.IO) {
+            //本轮的工具定义与请求策略都在这里定死：不再让网络层回头读全局配置
+            val defs = Tools.definitions()
+            val opts = Cfg.opts(bk.providerId, bk.baseUrl, bk.toolCall)
             val streamed = if (bk.noStream) {
                 //关了流式就整包等：端点不支持 SSE 时也走这条，界面上没有逐字过程
                 status = host.getString(R.string.ag_stream_off)
-                client.chat(bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams)
+                client.chat(bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams, defs, opts)
             } else try {
                 client.chatStream(
                     bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams,
+                    defs, opts,
                     shouldStop = { job?.isActive != true },
                     onDelta = mirror
                 )
@@ -1242,7 +1246,7 @@ object Agent {
             }
             streamed ?: run {
                 status = host.getString(R.string.ag_stream_fallback)
-                client.chat(bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams)
+                client.chat(bk.model, payload, temp, bk.think, bk.thinkEffort, bk.extraParams, defs, opts)
             }
         }
     }
@@ -1944,7 +1948,8 @@ object Agent {
         val m = sumLlm()
         val resp = runCatching {
             withContext(Dispatchers.IO) {
-                LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4]).chat(m[3], pay)
+                LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4])
+                    .chat(m[3], pay, opts = Cfg.opts(m[2], m[0]))
             }
         }.getOrNull() ?: return false
         val text = resp.text("content").trim()
@@ -2065,7 +2070,8 @@ object Agent {
         val m = sumLlm()
         val resp = runCatching {
             withContext(Dispatchers.IO) {
-                LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4]).chat(m[3], pay)
+                LlmClient(m[0], m[1], Providers.byId(m[2]).auth, protocol = m[4])
+                    .chat(m[3], pay, opts = Cfg.opts(m[2], m[0]))
             }
         }.getOrNull() ?: return false
         val text = resp.text("content").trim()

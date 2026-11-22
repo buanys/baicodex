@@ -16,6 +16,9 @@ package b.ai.core.cfg.app
 import b.ai.core.cfg.io.Store
 import b.ai.core.model.chat.WorkMode
 import b.ai.native.security.Vault
+import b.ai.net.api.llm.LlmClient
+import b.ai.net.api.llm.LlmOpts
+import b.ai.net.api.llm.NativeSearch
 import b.ai.net.api.llm.text
 
 import android.content.Context
@@ -1447,4 +1450,30 @@ object Cfg {
         if (text.isBlank()) sp?.edit()?.remove("draft_$sid")?.apply()
         else sp?.edit()?.putString("draft_$sid", text)?.apply()
     }
+
+    /**
+     * 按本轮后端快照算出一份请求策略。
+     *
+     * 网络层不再自己回读这些开关：调用方在这里一次性算好传下去，改别处的设置就不会
+     * 影响正在进行中的会话（会话级后端隔离靠的就是这一点）。
+     */
+    fun opts(
+        providerId: String = Cfg.providerId,
+        baseUrl: String = Cfg.baseUrl,
+        toolCall: Boolean = Cfg.modelToolCall
+    ): LlmOpts = LlmOpts(
+        providerId = providerId,
+        baseUrl = baseUrl,
+        toolCall = toolCall,
+        //单轮上限：最大模式显式抬到下限 MAX_OUT（各家服务端默认值普遍偏小，DeepSeek 是 4096）
+        maxTokens = if (maxMode) maxOf(maxTokens, LlmClient.MAX_OUT) else maxTokens,
+        reasoning = modelReasoning,
+        thinkLevel = thinkLevel,
+        nativeSearch = NativeSearch.on(providerId, baseUrl),
+        topP = topP,
+        topK = topK,
+        presencePenalty = presencePenalty,
+        frequencyPenalty = frequencyPenalty,
+        repeatPenalty = repeatPenalty
+    )
 }

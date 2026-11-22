@@ -13,7 +13,6 @@
  */
 
 package b.ai.net.api.llm
-import b.ai.agent.tool.Tools
 import b.ai.core.cfg.app.Cfg
 import b.ai.core.llm.LocalEngine
 import b.ai.core.model.chat.AuthStyle
@@ -53,7 +52,7 @@ class LlmClient(
 ) {
     companion object {
         /** 最大模式下至少下发的单轮上限：比自己设的小值抬上来，比这个还大就按用户设的走 */
-        private const val MAX_CAP = 8192
+        const val MAX_OUT = 8192
 
         /** Chat Completions（老默认，兼容绝大多数中转） */
         const val PROTO_CHAT = "chat"
@@ -125,7 +124,7 @@ class LlmClient(
 
     // ───────────────────────── Chat Completions ─────────────────────────
 
-    /** 组装请求体（tools + 采样参数 + 厂商私有字段） */
+    /** 组装请求体（tools + 采样参数 + 厂商私有字段）；策略全来自 [opts]，这里不回读全局配置 */
     private fun bodyOf(
         model: String,
         messages: JSONArray,
@@ -133,41 +132,38 @@ class LlmClient(
         think: Boolean,
         thinkEffort: String,
         extraParams: String?,
-        tools: JSONArray? = null
+        tools: JSONArray?,
+        opts: LlmOpts
     ): JSONObject {
         val body = JSONObject()
             .put("model", model)
             .put("messages", messages)
-        //模型不支持工具调用就别发 tools，发了有的中转站直接 400
-        if (b.ai.core.cfg.app.Cfg.modelToolCall) {
-            //传了就按传的来（分智能体只下发只读工具），传空数组等于这轮不给工具
-            val defs = tools ?: b.ai.agent.tool.Tools.definitions()
-            if (defs.length() > 0) body.put("tools", defs).put("tool_choice", "auto")
+        //模型不支持工具调用就别发 tools，发了有的中转站直接 400；
+        //传 null 等于这轮不给工具（以前这里会回退到全局注册表，辅助请求白带一堆工具定义）
+        if (opts.toolCall) {
+            val defs = tools
+            if (defs != null && defs.length() > 0) body.put("tools", defs).put("tool_choice", "auto")
         }
         //原生 search：勾了才声明各家自己的联网工具，服务端检索完把结果注入上下文
-        NativeSearch.inject(body, b.ai.core.cfg.app.Cfg.providerId, b.ai.core.cfg.app.Cfg.baseUrl)
+        NativeSearch.inject(body, opts.providerId, opts.baseUrl)
         temperature?.let { body.put("temperature", it) }
-        //单轮上限：最大模式显式抬到下限 8192（各家服务端默认值普遍偏小，DeepSeek 是 4096），否则按配置的 max_tokens
-        val maxTok = if (b.ai.core.cfg.app.Cfg.maxMode) maxOf(b.ai.core.cfg.app.Cfg.maxTokens, MAX_CAP) else b.ai.core.cfg.app.Cfg.maxTokens
-        if (maxTok > 0) body.put("max_tokens", maxTok)
+        //单轮上限由调用方按「最大模式」算好
+        if (opts.maxTokens > 0) body.put("max_tokens", opts.maxTokens)
         //思考与原生联网搜索互斥：本轮实际带上了服务端联网工具时，思考一律不发（工具与思考同时下发多数厂商会报错）
-        val searchOn = NativeSearch.on(
-            b.ai.core.cfg.app.Cfg.providerId,
-            b.ai.core.cfg.app.Cfg.baseUrl
-        )
+        val searchOn = opts.nativeSearch
         //思考强度：只看思考开关，最大模式不再强开思考（最大模式只管 max_tokens）
         //先让规则表说话：命中规则的模型按规则写（各家字段不同，用户可在设置里改）
         val ruleDone = if (!searchOn) {
-            ThinkRules.apply(body, model, think, b.ai.core.cfg.app.Cfg.thinkLevel)
+            ThinkRules.apply(body, model, think, opts.thinkLevel)
         } else false
         //思考下发只看设置里的能力开关（模型能力 →「推理 / 思考参数」），不再拿模型名单当门控：
         //中转站/自建模型的名单永远列不全，名单一窄就等于替用户把明确打开的思考悄悄吞掉
-        if (think && b.ai.core.cfg.app.Cfg.modelReasoning && !searchOn && !ruleDone) {
+        if (think && opts.reasoning && !searchOn && !ruleDone) {
             body.put("reasoning_effort", thinkEffort)
         }
         //DeepSeek 官方格式的思考开关默认是「开」：不发 thinking 就等于思考，必须显式 disabled 才真关
-        val ds = b.ai.core.cfg.app.Cfg.providerId.contains("deepseek", true) ||
-            b.ai.core.cfg.app.Cfg.baseUrl.contains("deepseek", true)
+        val ds = opts.providerId.contains("deepseek", true) ||
+            opts.baseUrl.contains("deepseek", true)
         //DeepSeek 硬约束（实测 400）：client tools 只能和 deepseek_web_search 一起、且必须在思考模式下使用。
         //所以带了原生联网搜索时不能再显式关思考，否则服务端直接拒绝：
         //  tools: client tools can only be used together with deepseek_web_search in thinking mode
@@ -176,16 +172,16 @@ class LlmClient(
             body.put("thinking", JSONObject().put("type", "disabled"))
         }
         //创造性 / 重复控制参数：负数或 0 表示不下发，交给服务端默认值
-        if (b.ai.core.cfg.app.Cfg.topP >= 0f) body.put("top_p", b.ai.core.cfg.app.Cfg.topP.toDouble())
-        if (b.ai.core.cfg.app.Cfg.topK > 0) body.put("top_k", b.ai.core.cfg.app.Cfg.topK)
-        if (b.ai.core.cfg.app.Cfg.presencePenalty > -9f) {
-            body.put("presence_penalty", b.ai.core.cfg.app.Cfg.presencePenalty.toDouble())
+        if (opts.topP >= 0f) body.put("top_p", opts.topP.toDouble())
+        if (opts.topK > 0) body.put("top_k", opts.topK)
+        if (opts.presencePenalty > -9f) {
+            body.put("presence_penalty", opts.presencePenalty.toDouble())
         }
-        if (b.ai.core.cfg.app.Cfg.frequencyPenalty > -9f) {
-            body.put("frequency_penalty", b.ai.core.cfg.app.Cfg.frequencyPenalty.toDouble())
+        if (opts.frequencyPenalty > -9f) {
+            body.put("frequency_penalty", opts.frequencyPenalty.toDouble())
         }
-        if (b.ai.core.cfg.app.Cfg.repeatPenalty > 0f) {
-            body.put("repeat_penalty", b.ai.core.cfg.app.Cfg.repeatPenalty.toDouble())
+        if (opts.repeatPenalty > 0f) {
+            body.put("repeat_penalty", opts.repeatPenalty.toDouble())
         }
         //附加参数浅合并，用来补厂商私有字段（如 thinking / enable_thinking）
         if (!extraParams.isNullOrBlank()) {
@@ -362,24 +358,24 @@ class LlmClient(
         thinkEffort: String,
         extraParams: String?,
         tools: JSONArray?,
-        stream: Boolean
+        stream: Boolean,
+        opts: LlmOpts
     ): JSONObject {
         val (input, instructions) = responsesInput(messages)
         val body = JSONObject().put("model", model).put("input", input)
         if (instructions.isNotBlank()) body.put("instructions", instructions)
         //工具：Responses 的 schema 是扁平的，必须转换，直接塞 Chat 结构会被判非法
-        if (b.ai.core.cfg.app.Cfg.modelToolCall) {
-            val defs = flatTools(tools ?: Tools.definitions())
+        if (opts.toolCall && tools != null) {
+            val defs = flatTools(tools)
             if (defs.length() > 0) body.put("tools", defs).put("tool_choice", "auto")
         }
         temperature?.let { body.put("temperature", it) }
-        val maxTok = if (b.ai.core.cfg.app.Cfg.maxMode) maxOf(b.ai.core.cfg.app.Cfg.maxTokens, MAX_CAP) else b.ai.core.cfg.app.Cfg.maxTokens
-        if (maxTok > 0) body.put("max_output_tokens", maxTok)
+        if (opts.maxTokens > 0) body.put("max_output_tokens", opts.maxTokens)
         //思考：Responses 只认 reasoning.effort（low / medium / high）；是否下发同样只认能力开关
-        if (think && b.ai.core.cfg.app.Cfg.modelReasoning) {
+        if (think && opts.reasoning) {
             body.put("reasoning", JSONObject().put("effort", thinkEffort))
         }
-        if (b.ai.core.cfg.app.Cfg.topP >= 0f) body.put("top_p", b.ai.core.cfg.app.Cfg.topP.toDouble())
+        if (opts.topP >= 0f) body.put("top_p", opts.topP.toDouble())
         //原生 search：Responses 各家中转支持度差异太大（web_search 工具名各不同），这里不注入，
         //避免勾了联网就被 400 挡住；需要联网请走 tavily / 内置搜索工具
         if (stream) body.put("stream", true)
@@ -461,16 +457,17 @@ class LlmClient(
         think: Boolean = false,
         thinkEffort: String = "medium",
         extraParams: String? = null,
-        tools: JSONArray? = null
+        tools: JSONArray? = null,
+        opts: LlmOpts
     ): JSONObject {
         //本地模式：整条链路切到 llama.cpp，base_url 与 apiKey 都不参与
         if (!forceRemote && LocalEngine.route()) return LocalEngine.chat(messages, temperature)
         if (base.isBlank()) noBase()
         return if (isResp) {
-            val body = responsesBody(model, messages, temperature, think, thinkEffort, extraParams, tools, false)
+            val body = responsesBody(model, messages, temperature, think, thinkEffort, extraParams, tools, false, opts)
             respMessage(exec(conn("/responses"), body.toString()))
         } else {
-            val body = bodyOf(model, messages, temperature, think, thinkEffort, extraParams, tools)
+            val body = bodyOf(model, messages, temperature, think, thinkEffort, extraParams, tools, opts)
             messageOf(exec(conn("/chat/completions"), body.toString()))
         }
     }//对话：带 tools 定义
@@ -489,6 +486,7 @@ class LlmClient(
         thinkEffort: String = "medium",
         extraParams: String? = null,
         tools: JSONArray? = null,
+        opts: LlmOpts,
         shouldStop: () -> Boolean = { false },
         onDelta: (String, String) -> Unit
     ): JSONObject {
@@ -501,9 +499,9 @@ class LlmClient(
             setRequestProperty("Cache-Control", "no-cache")
         }
         val body = if (isResp) {
-            responsesBody(model, messages, temperature, think, thinkEffort, extraParams, tools, true)
+            responsesBody(model, messages, temperature, think, thinkEffort, extraParams, tools, true, opts)
         } else {
-            bodyOf(model, messages, temperature, think, thinkEffort, extraParams, tools).put("stream", true)
+            bodyOf(model, messages, temperature, think, thinkEffort, extraParams, tools, opts).put("stream", true)
         }
         return try {
             c.outputStream.use { it.write(body.toString().toByteArray()) }

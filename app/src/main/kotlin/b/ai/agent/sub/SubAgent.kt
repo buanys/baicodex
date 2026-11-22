@@ -219,7 +219,13 @@ object SubAgents {
                 b?.model ?: Cfg.model, msgs,
                 b?.temperature?.takeIf { it >= 0f }?.toDouble()
                     ?: Cfg.temperature.takeIf { it >= 0f }?.toDouble(),
-                false, b?.thinkEffort ?: Cfg.thinkEffort, b?.extraParams ?: Cfg.extraParams, defs
+                false, b?.thinkEffort ?: Cfg.thinkEffort, b?.extraParams ?: Cfg.extraParams, defs,
+                //子任务跟主通道同一个冻结后端：能力开关也按它算，别回头读全局
+                Cfg.opts(
+                    b?.providerId ?: Cfg.providerId,
+                    b?.baseUrl ?: Cfg.baseUrl,
+                    b?.toolCall ?: Cfg.modelToolCall
+                )
             )
         }
     } //一次请求
