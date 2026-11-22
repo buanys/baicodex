@@ -1,3 +1,17 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:11
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.device.fs
 import b.ai.device.sys.probe.Router
 
@@ -22,7 +36,7 @@ object Workspace {
     private const val MAX_FILES = 2000
     private const val MAX_DEPTH = 6
     private const val TREE_CHARS = 4000
-    private const val TREE_TTL = 30_000L
+    private const val TREE_TTL = 180_000L
 
     /** 扫目录时直接跳过的重目录：构建产物与缓存，列出来只会撑爆提示词 */
     private val SKIP = setOf(

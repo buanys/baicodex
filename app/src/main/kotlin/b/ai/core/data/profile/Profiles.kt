@@ -1,3 +1,17 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:06
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.core.data.profile
 import b.ai.core.cfg.app.Cfg
 import b.ai.core.cfg.io.Paths
@@ -28,7 +42,17 @@ data class ModelProfile(
     /** 这条配置自己的上下文窗口（token）；0 表示跟随全局「模型窗口」设置 */
     val ctxTotal: Int = 0,
     /** 名字是否用户自定义：false 时始终按「厂商 · 模型」显示，改模型名字跟着变 */
-    val custom: Boolean = false
+    val custom: Boolean = false,
+    /** 这条模型认的思考档位（逗号分隔）；空 = 按厂商/型号自动推断 */
+    val thinkLevels: String = "",
+    /** 档位明细（JSON：显示名 / 写入路径 / 写入值），与 thinkLevels 一起存 */
+    val thinkLevelsJson: String = "",
+    /**
+     * 接口协议：chat = OpenAI Chat Completions（/chat/completions）；
+     * responses = OpenAI Responses API（/responses）。
+     * 按每条配置独立保存——同一家厂商可能只有部分模型要求新协议。
+     */
+    val protocol: String = "chat"
 ) {
     val autoLabel: String get() = Profiles.autoLabel(providerId, model)
     val label: String get() = if (custom && name.isNotBlank()) name else autoLabel
@@ -44,6 +68,9 @@ object Profiles {
 
     val selected: ModelProfile?
         get() = cache.value.firstOrNull { it.id == Cfg.profileId } ?: cache.value.firstOrNull()
+
+    /** 按 id 取一条配置：会话级后端绑定要用它，别把整表暴露出去 */
+    fun byId(id: String): ModelProfile? = cache.value.firstOrNull { it.id == id }
 
     fun init() {
         //外部存储没挂上（direct boot / 开机自启 / 后台起进程）：ensure() 会退回私有目录，
@@ -141,7 +168,8 @@ object Profiles {
         toolCall = Cfg.modelToolCall,
         reasoning = Cfg.modelReasoning,
         nativeSearch = Cfg.modelNativeSearch,
-        maxTokens = Cfg.maxTokens
+        maxTokens = Cfg.maxTokens,
+        protocol = Cfg.modelProtocol
     )
 
     private fun parse(raw: String): List<ModelProfile> {
@@ -173,8 +201,13 @@ object Profiles {
                 nativeSearch = o.optBoolean("nativeSearch", supportsNativeSearch(prov)),
                 maxTokens = o.optInt("maxTokens", o.optInt("max_tokens", 0)),
                 ctxTotal = o.optInt("ctxTotal", 0),
+                //档位以前只在内存里，没落盘，重启就丢（用户反馈「填了没用」）；现在跟配置一起存
+                thinkLevels = o.optString("thinkLevels", ""),
+                thinkLevelsJson = o.optString("thinkLevelsJson", ""),
                 //老文件没这个字段：名字正好等于自动名就算自动名，跟着模型走
-                custom = o.optBoolean("custom", name.isNotBlank() && name != autoLabel(prov, modelName))
+                custom = o.optBoolean("custom", name.isNotBlank() && name != autoLabel(prov, modelName)),
+                //老档没这个字段：一律当 Chat Completions，行为与升级前完全一致
+                protocol = o.optString("protocol", "chat").takeIf { it.isNotBlank() } ?: "chat"
             )
         }
     } //从 JSON 还原（Key 从私有 SP 取）
@@ -206,7 +239,10 @@ object Profiles {
                     .put("nativeSearch", p.nativeSearch)
                     .put("maxTokens", p.maxTokens)
                     .put("ctxTotal", p.ctxTotal)
+                    .put("thinkLevels", p.thinkLevels)
+                    .put("thinkLevelsJson", p.thinkLevelsJson)
                     .put("custom", p.custom)
+                    .put("protocol", p.protocol)
             )
         }
         val json = arr.toString(2)
@@ -247,7 +283,8 @@ object Profiles {
             vision = false,
             toolCall = false,
             reasoning = false,
-            nativeSearch = false
+            nativeSearch = false,
+            protocol = "chat"
         ).also { upsert(it) }
         select(p.id)
         //文件可能不在公共模型目录（用户从别处导入后加载的）：select 里找不到会清空，这里显式兜住
@@ -282,8 +319,12 @@ object Profiles {
         Cfg.maxTokens = p.maxTokens
         //窗口不写进全局那份设置：全局是用户手填的默认值，这条配置没填（0）时继续用它
         Cfg.profCtxTotal = p.ctxTotal
+        Cfg.profThinkLevels = p.thinkLevels
+        Cfg.profThinkLevelsJson = p.thinkLevelsJson
         Cfg.profileName = p.name
         Cfg.profileCustom = p.custom
+        //协议也按配置走：切到哪条就用哪条的协议，别让上一条的 Responses 影响这条
+        Cfg.modelProtocol = b.ai.net.api.llm.LlmClient.protocolOf(p.protocol)
     } //把配置灌进全局
 
     /** 自动名：厂商 · 模型，配置没起名时用它 */
@@ -300,6 +341,14 @@ object Profiles {
         "openai", "deepseek", "moonshot", "dashscope", "zhipu" -> true
         else -> false
     } //原生 search 默认值
+
+    /**
+     * 这家厂商的原生联网搜索是不是「必须在思考模式下」：
+     * DeepSeek 官方硬约束（实测 400）——client tools 只能和 deepseek_web_search 一起、且在思考模式使用。
+     * 所以这家不是「思考与搜索互斥」，而是「搜索必须先开思考」。
+     */
+    fun searchNeedsThink(providerId: String): Boolean =
+        providerId.contains("deepseek", true) || b.ai.core.cfg.app.Cfg.baseUrl.contains("deepseek", true)
 
     /** 把当前 Cfg 的状态写回选中条目：实时跟随，改一个字段就落一次 */
     fun capture() {
@@ -324,7 +373,10 @@ object Profiles {
             reasoning = Cfg.modelReasoning,
             nativeSearch = Cfg.modelNativeSearch,
             maxTokens = Cfg.maxTokens,
-            ctxTotal = Cfg.profCtxTotal
+            ctxTotal = Cfg.profCtxTotal,
+            thinkLevels = Cfg.profThinkLevels.trim(),
+            thinkLevelsJson = Cfg.profThinkLevelsJson,
+            protocol = Cfg.modelProtocol
         )
         upsert(p)
     } //当前值写回
@@ -364,7 +416,8 @@ object Profiles {
             nativeSearch = cur?.nativeSearch ?: Cfg.modelNativeSearch,
             maxTokens = cur?.maxTokens ?: Cfg.maxTokens,
             ctxTotal = cur?.ctxTotal ?: 0,
-            custom = false
+            custom = false,
+            protocol = cur?.protocol ?: Cfg.modelProtocol
         )
         upsert(p.copy(name = ""))
         //新条目沿用当前 Key（同样只进私有 SP）
@@ -391,7 +444,8 @@ object Profiles {
                 nativeSearch = Cfg.modelNativeSearch,
                 maxTokens = 0,
                 ctxTotal = 0,
-                custom = false
+                custom = false,
+                protocol = Cfg.modelProtocol
             )
         )
         Cfg.setProfileKey(id, "")

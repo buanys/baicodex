@@ -1,3 +1,17 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:05
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.core.data.db
 import b.ai.core.data.io.Backup
 import b.ai.core.data.usage.RawDay
@@ -81,7 +95,7 @@ object Repo {
     fun blankSession(): SessionRow? {
         r().query(
             "session",
-            arrayOf("id", "title", "category", "descr", "persona", "workspace"),
+            arrayOf("id", "title", "category", "descr", "persona", "workspace", "profile"),
             "NOT EXISTS(SELECT 1 FROM message x WHERE x.session_id=session.id AND x.role='user')",
             null, null, null, "updated_at DESC", "1"
         ).use { c ->
@@ -92,7 +106,8 @@ object Repo {
                     c.getString(2),
                     descr = c.getString(3) ?: "",
                     persona = c.getString(4) ?: "",
-                    workspace = c.getString(5) ?: ""
+                    workspace = c.getString(5) ?: "",
+                    profile = c.getString(6) ?: ""
                 )
             }
         }
@@ -102,7 +117,7 @@ object Repo {
     fun latestSession(): SessionRow? {
         r().query(
             "session",
-            arrayOf("id", "title", "category", "descr", "persona", "workspace"),
+            arrayOf("id", "title", "category", "descr", "persona", "workspace", "profile"),
             null, null, null, null, "updated_at DESC", "1"
         ).use { c ->
             if (c.moveToFirst()) {
@@ -112,7 +127,8 @@ object Repo {
                     c.getString(2),
                     descr = c.getString(3) ?: "",
                     persona = c.getString(4) ?: "",
-                    workspace = c.getString(5) ?: ""
+                    workspace = c.getString(5) ?: "",
+                    profile = c.getString(6) ?: ""
                 )
             }
         }
@@ -123,7 +139,7 @@ object Repo {
     fun session(id: String): SessionRow? {
         r().query(
             "session",
-            arrayOf("id", "title", "category", "descr", "persona", "workspace"),
+            arrayOf("id", "title", "category", "descr", "persona", "workspace", "profile"),
             "id=?", arrayOf(id), null, null, null, "1"
         ).use { c ->
             if (c.moveToFirst()) {
@@ -133,7 +149,8 @@ object Repo {
                     c.getString(2),
                     descr = c.getString(3) ?: "",
                     persona = c.getString(4) ?: "",
-                    workspace = c.getString(5) ?: ""
+                    workspace = c.getString(5) ?: "",
+                    profile = c.getString(6) ?: ""
                 )
             }
         }
@@ -157,6 +174,15 @@ object Repo {
             arrayOf(sessionId)
         )
     } //会话工作区
+
+    fun setProfile(sessionId: String, profileId: String) {
+        w().update(
+            "session",
+            ContentValues().apply { put("profile", profileId) },
+            "id=?",
+            arrayOf(sessionId)
+        )
+    } //会话绑定的模型配置
 
     /** 工作区搬家后把会话里记的旧路径换成新路径：返回改了多少行 */
     fun remapWorkspace(old: String, new: String): Int {
@@ -192,7 +218,7 @@ object Repo {
         //新会话（一条用户消息都没有）永远排最上面，其次置顶，其余按最近交互时间
         val sql = "SELECT s.id,s.title,s.category,s.descr,s.updated_at," +
             "IFNULL(m.content,''),IFNULL(g.cnt,0)," +
-            "s.pinned,s.persona,s.workspace," +
+            "s.pinned,s.persona,s.workspace,s.profile," +
             "CASE WHEN EXISTS(SELECT 1 FROM message x WHERE x.session_id=s.id AND x.role='user') THEN 1 ELSE 0 END AS used " +
             "FROM session s " +
             "LEFT JOIN (SELECT session_id,COUNT(1) cnt,MAX(_id) maxid FROM message GROUP BY session_id) g " +
@@ -212,7 +238,8 @@ object Repo {
                         count = c.getInt(6),
                         pinned = c.getInt(7) == 1,
                         persona = c.getString(8) ?: "",
-                        workspace = c.getString(9) ?: ""
+                        workspace = c.getString(9) ?: "",
+                        profile = c.getString(10) ?: ""
                     )
                 )
             }
@@ -302,6 +329,69 @@ object Repo {
         }
         return out
     } //会话搜索
+
+    /** 一条消息级命中：给 chat_search 用，带会话标题与时间，方便模型引用「哪次对话说过什么」 */
+    data class MsgHit(
+        val sessionId: String,
+        val title: String,
+        val role: String,
+        val content: String,
+        val at: Long,
+        /** 是否是上下文压缩后的摘要（role=summary）：统计与展示都要能区分 */
+        val compressed: Boolean = false
+    )
+
+    /**
+     * 按关键词搜消息正文（会话内 + 跨会话），返回消息级命中。
+     * 没有 FTS：LIKE 全表扫，但本机库就几万条，够用；session_id 非空时只搜那一个会话。
+     */
+    fun searchMessages(
+        q: String,
+        limit: Int = 20,
+        sessionId: String = "",
+        role: String = "",
+        includeSummary: Boolean = false
+    ): List<MsgHit> {
+        val key = q.trim()
+        if (key.isBlank()) return emptyList()
+        val like = "%$key%"
+        val cap = limit.coerceIn(1, 50)
+        val sql = StringBuilder(
+            "SELECT m.session_id, IFNULL(s.title,''), m.role, m.content, m.created_at " +
+                "FROM message m LEFT JOIN session s ON s.id = m.session_id WHERE m.content LIKE ?"
+        )
+        val args = ArrayList<String>(listOf(like))
+        //只查一方说的话：用户问「我什么时候说过」和「你上次怎么答的」是两种需求
+        val r = role.trim().lowercase()
+        if (r == "user" || r == "assistant") {
+            sql.append(" AND m.role = ?")
+            args.add(r)
+        }
+        //压缩摘要是助手侧生成的历史概括，默认不混进「原话」里，需要时再带上
+        if (!includeSummary) sql.append(" AND m.role <> 'summary'")
+        if (sessionId.isNotBlank()) {
+            sql.append(" AND m.session_id = ?")
+            args.add(sessionId)
+        }
+        sql.append(" ORDER BY m.created_at DESC LIMIT ?")
+        args.add(cap.toString())
+        val out = ArrayList<MsgHit>()
+        r().rawQuery(sql.toString(), args.toTypedArray()).use { c ->
+            while (c.moveToNext()) {
+                out.add(
+                    MsgHit(
+                        sessionId = c.getString(0) ?: "",
+                        title = c.getString(1) ?: "",
+                        role = c.getString(2) ?: "",
+                        content = c.getString(3) ?: "",
+                        at = c.getLong(4),
+                        compressed = (c.getString(2) ?: "") == "summary"
+                    )
+                )
+            }
+        }
+        return out
+    } //消息级搜索
 
     /**
      * 读当前分支：从会话的 head 沿 parent_id 回溯到根，再按 _id 正序返回。

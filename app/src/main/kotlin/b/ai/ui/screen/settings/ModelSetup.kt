@@ -1,3 +1,17 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:23
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.ui.screen.settings
 import b.ai.ui.glass.glassScrollState
 import b.ai.ui.dialog.BottomSheetCard
@@ -113,6 +127,8 @@ fun ModelSetupPanel() {
     var fTok by remember { mutableStateOf(0) }
     /** 这条配置自己的上下文窗口；0 = 跟随全局「模型窗口」 */
     var fCtx by remember { mutableStateOf(0) }
+    /** 这条配置的接口协议：chat = Chat Completions；responses = Responses API */
+    var fProto by remember { mutableStateOf("chat") }
     var snap by remember { mutableStateOf("") } //上次载入或保存后的指纹，用来判断有没有改动
     var savedTo by remember { mutableStateOf("") } //保存成功的提示，一改动就失效
     var formErr by remember { mutableStateOf<String?>(null) }
@@ -124,7 +140,7 @@ fun ModelSetupPanel() {
     //表单指纹：任何一项变了就算脏，保存提示随之失效
     fun finger(): String = listOf(
         fId, fName, fCustom.toString(), fProv, fBase, fKey,
-        fModels.joinToString(","), fModel, fTok.toString(), fCtx.toString()
+        fModels.joinToString(","), fModel, fTok.toString(), fCtx.toString(), fProto
     ).joinToString("|")
 
     val isLocal = fProv == Providers.LOCAL //本地模型这条：base_url 与 Key 都不用填
@@ -142,6 +158,7 @@ fun ModelSetupPanel() {
         fModel = p?.model ?: ""
         fTok = p?.maxTokens ?: 0
         fCtx = p?.ctxTotal ?: 0
+        fProto = LlmClient.protocolOf(p?.protocol ?: "chat")
         formErr = null
         savedTo = ""
         snap = finger()
@@ -160,6 +177,8 @@ fun ModelSetupPanel() {
         fModel = ""
         fTok = 0
         fCtx = 0
+        //新建时沿用当前这条的协议：同一家服务商多半都要求同一种协议
+        fProto = LlmClient.protocolOf(Cfg.modelProtocol)
         formErr = null
         savedTo = ""
         snap = finger()
@@ -178,7 +197,7 @@ fun ModelSetupPanel() {
             .distinct().filter { it.isNotBlank() }
         val one = fModel.trim().ifBlank { ms.firstOrNull() ?: "" }
         if (one.isEmpty()) {
-            formErr = if (isLocal) "先选一个已导入的 GGUF 模型" else ctx.getString(R.string.ms_no_model)
+            formErr = if (isLocal) b.ai.App.self.getString(R.string.tx_a26d1460) else ctx.getString(R.string.ms_no_model)
             return
         }
         val id = fId.ifBlank { "p" + System.currentTimeMillis() }
@@ -199,15 +218,18 @@ fun ModelSetupPanel() {
             reasoning = Cfg.modelReasoning,
             maxTokens = fTok,
             ctxTotal = fCtx,
+            protocol = fProto,
             custom = custom
         )
         if (effKey.isNotEmpty() && !Cfg.setProfileKey(id, effKey)) {
             //凭据写失败必须当场说：Key 只在内存里活着，重启就变空（加密库没加载 / 落盘失败）
-            formErr = "API Key 没存进加密库：${Vault.lastError}"
+            formErr = b.ai.App.self.getString(R.string.tx_852246ff, Vault.lastError)
             return
         }
         Profiles.upsert(p)
         Profiles.select(id)
+        b.ai.agent.run.Agent.bindProfile(id)
+        b.ai.agent.run.Agent.bindProfile(id)
         loadForm(p)
         //写盘失败必须当场说清楚：以前这里无论落没落盘都提示「已保存」，重启才发现配置没了
         if (Profiles.lastError.isNotEmpty()) {
@@ -228,7 +250,7 @@ fun ModelSetupPanel() {
         if (isLocal) {
             err = null
             models = ModelHub.list().map { it.name }
-            if (models.isEmpty()) err = "还没有导入任何 GGUF，先去「本地模型」里导入或下载一个"
+            if (models.isEmpty()) err = b.ai.App.self.getString(R.string.tx_047dd4ac)
             return
         }
         loading = true
@@ -412,7 +434,7 @@ fun ModelSetupPanel() {
                 Text(Providers.byId(fProv).name, fontSize = 14.sp, color = TextPrimary)
                 Text(
                     Providers.byId(fProv).baseUrl.ifBlank {
-                        if (fProv == Providers.LOCAL) "手机本地 GGUF，不用 base_url 与 Key" else stringResource(R.string.ms_need_base)
+                        if (fProv == Providers.LOCAL) stringResource(R.string.tx_dcc25a21) else stringResource(R.string.ms_need_base)
                     },
                     fontSize = 10.sp,
                     color = TextSecondary,
@@ -424,7 +446,7 @@ fun ModelSetupPanel() {
         //本地模型不需要 base_url 与 Key：直接换成一句说明，别让人以为漏填了
         if (isLocal) {
             Text(
-                "本地模型不用填 base_url 与 API key：聊天时直接在手机上跑选的 GGUF",
+                stringResource(R.string.tx_d741c7ad),
                 fontSize = 11.sp,
                 color = TextSecondary,
                 modifier = Modifier.padding(top = 10.dp)
@@ -546,13 +568,32 @@ fun ModelSetupPanel() {
             color = TextSecondary
         )
         Spacer(Modifier.height(10.dp))
+        //接口协议：部分服务商已停用 Chat Completions（报 chat_completions_disabled），只能切到 Responses API。
+        //按这条配置独立保存，切配置不会互相影响
+        SelectField(
+            stringResource(R.string.ms_proto),
+            if (fProto == LlmClient.PROTO_RESPONSES) "Responses API" else "Chat Completions",
+            listOf(LlmClient.PROTO_CHAT, LlmClient.PROTO_RESPONSES),
+            optionLabel = {
+                if (it == LlmClient.PROTO_RESPONSES) "Responses API" else "Chat Completions"
+            },
+            isSelected = { fProto == it },
+            onSelect = { fProto = it; formErr = null }
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            stringResource(R.string.ms_proto_sub),
+            fontSize = 10.sp,
+            color = TextSecondary
+        )
+        Spacer(Modifier.height(10.dp))
         //保存才落盘：脏的时候按钮实心，存完给一句写回哪条
         val dirty = finger() != snap
         Row(verticalAlignment = Alignment.CenterVertically) {
             PrimaryButton(stringResource(R.string.ms_save), enabled = dirty) { save() }
             Spacer(Modifier.width(8.dp))
             //测连通性：拿表单里的当前值跑两轮，第一轮文字、第二轮注入纯黑图测视觉；视觉开关关着就跳过第二轮
-            GhostButton(if (probing) "测试中…" else "测连通性", Modifier.height(46.dp)) {
+            GhostButton(if (probing) stringResource(R.string.tx_2ff33d1a) else stringResource(R.string.tx_41873cd0), Modifier.height(46.dp)) {
                 if (probing) return@GhostButton
                 probing = true
                 probeMsg = ""
@@ -563,19 +604,19 @@ fun ModelSetupPanel() {
                 val md = fModel.trim()
                 val vis = Cfg.modelVision
                 scope.launch {
-                    val o = withContext(Dispatchers.IO) { ApiProbe.test(prov, base, key, md, vis) }
+                    val o = withContext(Dispatchers.IO) { ApiProbe.test(prov, base, key, md, vis, fProto) }
                     probing = false
                     val t = o.text
                     val v = o.vision
                     probeOk = t.ok && (v?.ok ?: true)
                     probeMsg = buildString {
                         append("文字轮：")
-                        if (t.ok) append("✓ ${t.ms}ms · ${t.reply.length} 字 · ${t.reply}")
+                        if (t.ok) append(b.ai.App.self.getString(R.string.tx_e7f137f0, t.ms, t.reply.length, t.reply))
                         else append("✗ " + t.err + (if (t.ms > 0) "（${t.ms}ms）" else ""))
                         append("\n图片轮：")
                         when {
-                            v == null -> append("跳过 · " + o.skipped)
-                            v.ok -> append("✓ ${v.ms}ms · 模型认出纯黑 · ${v.reply}")
+                            v == null -> append(b.ai.App.self.getString(R.string.tx_73500eb7) + o.skipped)
+                            v.ok -> append(b.ai.App.self.getString(R.string.tx_8d19f09c, v.ms, v.reply))
                             else -> append("✗ " + v.err + (if (v.ms > 0) "（${v.ms}ms）" else ""))
                         }
                     }
@@ -622,7 +663,7 @@ fun ProfileList() {
         val errs = listOfNotNull(
             Profiles.lastError.takeIf { it.isNotEmpty() },
             Vault.lastError.takeIf { it.isNotEmpty() },
-            if (Vault.locked()) "凭据库解不开（旧版本的密钥对不上）：重新填一次 API Key 并保存，会自动归档旧库并重建" else null
+            if (Vault.locked()) stringResource(R.string.tx_c2da1104) else null
         )
         if (errs.isNotEmpty()) {
             val ctx = LocalContext.current
@@ -637,7 +678,7 @@ fun ProfileList() {
                     Text(e, fontSize = 11.sp, color = DangerRed)
                 }
                 Text(
-                    "点这里打开「所有文件访问」权限；开着「数据超强加密」时换成正确的备份密钥后重启即可恢复",
+                    stringResource(R.string.tx_56ce38d7),
                     fontSize = 10.sp,
                     color = TextSecondary
                 )
@@ -680,7 +721,8 @@ private fun ProfileRow(p: ModelProfile) {
         p.model.ifBlank { "未选模型" } + " · 本地 GGUF"
     } else {
         p.model.ifBlank { stringResource(R.string.ms_no_model) } + " · " +
-            p.baseUrl.ifBlank { stringResource(R.string.ms_no_base) }
+            p.baseUrl.ifBlank { stringResource(R.string.ms_no_base) } +
+            if (LlmClient.protocolOf(p.protocol) == LlmClient.PROTO_RESPONSES) " · Responses" else ""
     }
     Row(
         Modifier
@@ -689,6 +731,8 @@ private fun ProfileRow(p: ModelProfile) {
             .tap {
                 //切配置就整组换成那条的已保存内容，表单里没保存的改动会丢
                 Profiles.select(p.id)
+                b.ai.agent.run.Agent.bindProfile(p.id)
+                b.ai.agent.run.Agent.bindProfile(p.id)
             }
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -742,7 +786,7 @@ private fun LocalPickDialog(
         DialogHead("选本地模型", onClose)
         Spacer(Modifier.height(8.dp))
         if (files.isEmpty()) {
-            Text("还没有导入 GGUF。先去「本地模型」分区导入或下载一个。", fontSize = 12.sp, color = TextSecondary)
+            Text(stringResource(R.string.tx_20d3e7ce), fontSize = 12.sp, color = TextSecondary)
             Spacer(Modifier.height(8.dp))
         } else {
             Column(
@@ -812,7 +856,7 @@ private fun ProviderDialog(current: String, onPick: (Provider) -> Unit, onClose:
                         Text(p.name, fontSize = 13.sp, color = if (sel) AccentBlue else TextPrimary)
                         Text(
                             p.baseUrl.ifBlank {
-                                if (p.id == Providers.LOCAL) "用手机上的 GGUF，不用填 base_url 与 Key" else stringResource(R.string.ms_need_base)
+                                if (p.id == Providers.LOCAL) stringResource(R.string.tx_d2406fdf) else stringResource(R.string.ms_need_base)
                             },
                             fontSize = 10.sp,
                             color = TextSecondary,

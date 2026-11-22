@@ -1,3 +1,17 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:20
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.ui.screen.chat
 import b.ai.ui.widget.tap
 import b.ai.ui.glass.glassScrollState
@@ -167,6 +181,8 @@ internal fun ChatCfgSheet(onClose: () -> Unit) {
                             //切走前先存回旧配置，改了一半的 Key / 模型不会丢
                             Profiles.capture()
                             Profiles.select(p.id)
+                            //写回当前会话：换后端只影响这个对话
+                            b.ai.agent.run.Agent.bindProfile(p.id)
                         }
                         .padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically

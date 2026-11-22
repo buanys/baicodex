@@ -1,3 +1,17 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:04
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.agent.sub
 import b.ai.agent.run.Agent
 import b.ai.agent.tool.Tools
@@ -191,12 +205,21 @@ object SubAgents {
 
     /** 子智能体一律关思考：并行跑要的是快，不是想得深 */
     private suspend fun ask(msgs: JSONArray, defs: JSONArray?): JSONObject {
-        val key = Cfg.keyList(Cfg.profileId).filter { it.isNotBlank() }.firstOrNull() ?: Cfg.apiKey
-        val client = LlmClient(Cfg.baseUrl, key, Providers.byId(Cfg.providerId).auth)
+        //优先用主通道本轮的冻结后端：主会话换了模型 / 地址，子任务必须跟着走同一个
+        val b = Agent.subBackend()
+        val key = b?.key ?: (Cfg.keyList(Cfg.profileId).filter { it.isNotBlank() }.firstOrNull() ?: Cfg.apiKey)
+        val client = LlmClient(
+            b?.baseUrl ?: Cfg.baseUrl,
+            key,
+            Providers.byId(b?.providerId ?: Cfg.providerId).auth,
+            protocol = b?.protocol ?: Cfg.modelProtocol
+        )
         return withContext(Dispatchers.IO) {
             client.chat(
-                Cfg.model, msgs, Cfg.temperature.takeIf { it >= 0f }?.toDouble(),
-                false, Cfg.thinkEffort, Cfg.extraParams, defs
+                b?.model ?: Cfg.model, msgs,
+                b?.temperature?.takeIf { it >= 0f }?.toDouble()
+                    ?: Cfg.temperature.takeIf { it >= 0f }?.toDouble(),
+                false, b?.thinkEffort ?: Cfg.thinkEffort, b?.extraParams ?: Cfg.extraParams, defs
             )
         }
     } //一次请求

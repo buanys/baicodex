@@ -1,5 +1,20 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:09
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.core.pet.say
 import b.ai.core.pet.balance.PetBalance
+import b.ai.core.pet.peak.PeakHours
 import b.ai.core.cfg.app.Cfg
 
 import android.content.Context
@@ -9,7 +24,7 @@ import b.ai.R
 object PetSay {
 
     fun next(c: Context): String {
-        val off = PetBalance.offPeak()
+        val off = PeakHours.offPeak()
         val timed = c.getString(if (off) R.string.pet_say_offpeak else R.string.pet_say_peak)
         if ((Math.random() * 100).toInt() < Cfg.petTimedPct) return timed
         val one = PetLines.pick()

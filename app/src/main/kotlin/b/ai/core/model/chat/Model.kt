@@ -1,3 +1,17 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:08
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.core.model.chat
 import b.ai.core.cfg.app.Cfg
 import b.ai.core.media.img.Images
@@ -66,7 +80,9 @@ data class SessionRow(
     /** 会话自己的智能体角色 id，空 = 默认助手 */
     val persona: String = "",
     /** 会话自己的工作区目录，空 = 用全局兜底 */
-    val workspace: String = ""
+    val workspace: String = "",
+    /** 会话自己绑定的模型配置 id（models.json 里的条目），空 = 跟随全局当前选中 */
+    val profile: String = ""
 )
 
 /** 工具调用 */

@@ -49,7 +49,7 @@ val baiAbis: List<String> = (findProperty("bai.abis") as String?)
 android {
 
     androidResources {
-        ignoreAssetsPattern = "rootfs.tgz"
+        ignoreAssetsPattern = "rootfs.tgz:sherpa"
         localeFilters += listOf("zh", "en", "fr", "ja", "zh-rTW")
     }
     namespace = "b.ai"
@@ -60,8 +60,8 @@ android {
         applicationId = "b.ai"
         minSdk = 24
         targetSdk = 34
-        versionCode = 56
-        versionName = "1.18.7"
+        versionCode = 61
+        versionName = "1.20.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BAI_HOST", "\"$baiHost\"")
@@ -71,11 +71,12 @@ android {
         buildConfigField("String", "MIOT_REGION", "\"$miotRegion\"")
         SEEDS.forEach { row -> buildConfigField("String", row[0], seedLiteral(row[1], "")) }
         //ABI 目标由外层 splits.abi.include 决定（单包模式例外），两处同时写会报 Conflicting configuration
-        if (baiAesSeed != null) {
-            externalNativeBuild {
-                cmake { arguments.add("-DBAI_KEY_HEX=$baiAesSeed") }
+        externalNativeBuild {
+            cmake {
+                arguments.add("-DCMAKE_SUPPRESS_REGENERATION=ON")
+                if (baiAesSeed != null) arguments.add("-DBAI_KEY_HEX=$baiAesSeed")
             }
-        }
+        } //cmake 参数
         if (uniPack) {
             ndk { abiFilters.addAll(baiAbis) }
         }

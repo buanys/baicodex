@@ -1,3 +1,17 @@
+/*
+ * Project:    Baicodex
+ * Author:     by 沐白/Baix
+ * License:    AGPL-3.0 (GNU Affero General Public License v3.0)
+ * Date:       2026-11-20 21:47:10
+ * Repository: https://github.com/mubai0122/Baicodex
+ * Website:    https://agent.ai.baiccb.cn/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 package b.ai.core.plugin.skill
 import b.ai.core.cfg.io.Paths
 import b.ai.native.script.Dsl
@@ -166,8 +180,12 @@ object SkillPacks {
     fun prompt(): String {
         val on = cache.value.filter { it.on && (it.funcs.isNotEmpty() || it.readme.isNotBlank() || it.desc.isNotBlank()) }
         if (on.isEmpty()) return ""
+        //标题行走种子（正文在 local.properties），缺省用代码内兜底
+        val head = b.ai.BuildConfig.SEED_PROMPT_SKILL_LIST.trim().ifBlank {
+            "可用技能（要用法先 skill_read，再直接调它下面的函数；参数不要凭空编）："
+        }
         return buildString {
-            append("可用技能（要用法先 skill_read，再直接调它下面的函数；参数不要凭空编）：\n")
+            append(head).append("\n")
             on.forEach { p ->
                 append("- ").append(p.id).append(" — ").append(p.name.ifBlank { "未命名技能" })
                 if (p.desc.isNotBlank()) append("：").append(p.desc)
