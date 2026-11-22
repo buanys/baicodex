@@ -23,6 +23,8 @@ composeMp = "1.12.2"
 materialIconsCore = "1.7.8"
 backdrop = "2.0.0"
 stringfog = "v2.3.0"
+junit = "4.13.2"
+orgJson = "20240303"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -50,3 +52,6 @@ shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuk
 shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
 kyant-backdrop = { group = "io.github.kyant0", name = "backdrop", version.ref = "backdrop" }
 pangu-stringfog = { group = "com.github.Pangu-Immortal.StringFogPro", name = "stringfog", version.ref = "stringfog" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+# JVM 单测里要真 org.json：mockable android.jar 里的实现只会抛 "not mocked"
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }

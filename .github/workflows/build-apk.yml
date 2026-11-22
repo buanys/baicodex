@@ -185,6 +185,15 @@ jobs:
           cut -d= -f1 local.properties
           ls -l "$KS"
 
+      - name: Unit tests
+        run: |
+          set -eux
+          chmod +x gradlew
+          ./gradlew --no-daemon testDebugUnitTest \
+            -Pbai.abis="${ABIS}" \
+            --console=plain \
+            -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+
       - name: Build debug APK
         env:
           BAI_CCACHE: '1'
