@@ -79,7 +79,10 @@ class TurnEngineTest {
             return AfterAnswer.Stop
         }
 
-        override suspend fun cardStart(call: ToolCall): Long = ++cards.toLong()
+        override suspend fun cardStart(call: ToolCall): Long {
+            cards++
+            return cards.toLong()
+        }
         override fun cardEnd(seq: Long) { cardsEnded++ }
 
         override suspend fun handleSpecial(call: ToolCall, position: Int, total: Int): Boolean = false
