@@ -1253,7 +1253,49 @@ object Tools {
         return out
     } //OpenAI tools 定义
 
-    fun execute(name: String, args: JSONObject): ToolOutcome = when (name) {
+    fun execute(name: String, args: JSONObject): ToolOutcome {
+        //参数先过一遍：漏字段不再被 optString 的默认值兜成空串去执行（那会变成「成功但做错事」）
+        brief(name, args)?.let { return ToolOutcome(false, it, Route.SANDBOX) }
+        return dispatch(name, args)
+    }
+
+    /**
+     * 必填参数校验。
+     *
+     * 只覆盖会直接改文件、执行命令的这一族（读/写/改/建目录/删/终端/root shell），
+     * 其余工具按同样方式后续补。返回 null 表示参数齐了，返回字符串是给模型看的缺失说明。
+     */
+    private fun brief(name: String, args: JSONObject): String? {
+        fun filled(key: String) = args.optString(key).isNotBlank()
+        val lack = when (name) {
+            READ -> if (filled("path")) null else "path"
+            WRITE -> when {
+                !filled("path") -> "path"
+                //内容允许是空串（建空文件），只要求这个键在
+                !args.has("content") -> "content"
+                else -> null
+            }
+            EDIT -> {
+                val mode = args.optString("mode").trim().lowercase()
+                when {
+                    !filled("path") -> "path"
+                    mode == "insert" || mode == "delete" ->
+                        if (args.optInt("line", 0) <= 0) "line（mode=$mode 需要从 1 开始的行号）"
+                        else if (mode == "insert" && !filled("text")) "text（mode=insert 需要插入的内容）"
+                        else null
+                    !filled("old") -> "old"
+                    !filled("new") -> "new"
+                    else -> null
+                }
+            }
+            MAKE_DIR, DELETE -> if (filled("path")) null else "path"
+            SHELL, LINUX -> if (filled("command")) null else "command"
+            else -> null
+        } ?: return null
+        return "缺少必填参数：$lack。$name 这次没有执行——补上参数再调用，别拿空参数重试。"
+    }
+
+    private fun dispatch(name: String, args: JSONObject): ToolOutcome = when (name) {
         READ -> FileOps.read(
             args.optString("path"), args.optInt("page", 1), args.optInt("lines", 400)
         ).toOutcome().governed()
