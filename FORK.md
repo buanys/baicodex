@@ -37,7 +37,7 @@ git checkout main && git cherry-pick <sha>
 
 | 文件 | 改了什么 | 为什么 |
 |---|---|---|
-| `.github/workflows/build-apk.yml` | 新增 CI：装 NDK/CMake、拉第三方源码、ccache、出 APK | 手机上 NDK 是 x86_64，编不了 native |
+| `.github/workflows/build-apk.yml` | 新增 CI：装 NDK/CMake、拉第三方源码（quickjs / android_openssl / llama.cpp / bzip2）、ccache、出 APK | 手机上 NDK 是 x86_64，编不了 native |
 | `app/build.gradle.kts` | `abiFilters` 支持 `-Pbai.abis=arm64-v8a` | CI 只编 64 位，省一半 native 时间 |
 | `app/src/main/cpp/CMakeLists.txt` | 加 13 行 ccache 开关（`BAI_CCACHE` 环境变量） | 不改默认行为，只给 CI 用 |
 | `signing/baicodex-ci.jks` | 固定签名密钥 | 签名不变才能覆盖安装，不用每次卸载 |
@@ -59,8 +59,16 @@ git checkout main && git cherry-pick <sha>
 
 ## 版本号
 
-- 上游号 + 自用后缀：`versionName = "1.18.2-fork.1"`，`versionCode` 每次 +1。
+- 版本号跟上游走（`versionCode` / `versionName` 原样保留上游值），不另加后缀。
 - 改版本号只影响"装上去看起来是哪个版本"，不影响升级：能不能覆盖安装只取决于签名一致。
+
+## 上游 1.19+ 带来的两处变化
+
+- **系统提示词正文移出仓库**：上游把提示词拆成 `seed.prompt.*` 种子，构建期由 `local.properties` 注入。
+  CI 不写这些键，各段就落到 `PromptStore.kt` 里的默认文案——能用，但不是上游调过的那版。
+  想要上游那版：往 `local.properties` 里补 `seed.prompt.*`，或在本机生成后再构建。
+- **bz2 解压需要 bzip2 源码**：`CMakeLists.txt` 里新增了 `_third_party/bzip2` 静态库，
+  CI 的 "Fetch third-party sources" 步骤已跟着加了 `BZIP2_SHA` 钉版本拉取。
 
 ## 每次改动之后
 
